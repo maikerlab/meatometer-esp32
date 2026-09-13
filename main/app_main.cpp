@@ -40,9 +40,11 @@ using namespace chip::DeviceLayer;
 
 #include "max6675.h"
 
+#include <clusters/temperature_measurement/integration.h>
+
 static const char *TAG = "app_main";
 uint16_t light_endpoint_id = 0;
-uint16_t temperature_endpoint_id = 2;
+uint16_t temperature_endpoint_id = 0;
 
 using namespace esp_matter;
 using namespace esp_matter::attribute;
@@ -196,26 +198,19 @@ void MeasureTemperature_Task(void *pvParameters) {
     double mean = sum / count;
     ESP_LOGI(TAG, "Mean temperature: %.0f °C", mean);
 
-    // MeasuredValue is nullable<int16_t> (centidegrees). Update on Matter thread.
     const uint16_t endpoint_id = temperature_endpoint_id;
     const int16_t measured_value = static_cast<int16_t>(mean * 100);
-    chip::DeviceLayer::SystemLayer().ScheduleLambda([endpoint_id, measured_value]() {
-      attribute_t *attribute =
-          attribute::get(endpoint_id, TemperatureMeasurement::Id,
-                         TemperatureMeasurement::Attributes::MeasuredValue::Id);
-      if (!attribute) {
-        return;
+    chip::DeviceLayer::SystemLayer().ScheduleLambda([endpoint_id,
+                                                     measured_value]() {
+      CHIP_ERROR err =
+          TemperatureMeasurement::SetMeasuredValue(endpoint_id, measured_value);
+      if (err != CHIP_NO_ERROR) {
+        ESP_LOGE(TAG, "SetMeasuredValue failed: %" CHIP_ERROR_FORMAT,
+                 err.Format());
       }
-
-      esp_matter_attr_val_t val;
-      attribute::get_val(attribute, &val);
-      val.val.i16 = measured_value;
-      attribute::update(endpoint_id, TemperatureMeasurement::Id,
-                        TemperatureMeasurement::Attributes::MeasuredValue::Id,
-                        &val);
     });
 
-    vTaskDelay(500 / portTICK_PERIOD_MS);
+    vTaskDelay(5000 / portTICK_PERIOD_MS);
   }
 }
 
@@ -277,14 +272,14 @@ extern "C" void app_main() {
   light_endpoint_id = endpoint::get_id(endpoint);
   ESP_LOGI(TAG, "Light created with endpoint_id %d", light_endpoint_id);
 
-  // TemperatureMeasurement attributes are nullable; default ctor leaves them null.
+  // Min/Max are applied by the TemperatureMeasurement SCI cluster at init.
+  // MeasuredValue itself is owned by the cluster and starts null until
+  // SetMeasuredValue().
   temperature_sensor::config_t temperature_config;
-  temperature_config.temperature_measurement.measured_value =
-      nullable<int16_t>(2500); // 25.00 °C
-  temperature_config.temperature_measurement.min_measured_value =
-      nullable<int16_t>(1000); // 10.00 °C
-  temperature_config.temperature_measurement.max_measured_value =
-      nullable<int16_t>(5000); // 50.00 °C
+  // temperature_config.temperature_measurement.min_measured_value =
+  // nullable<int16_t>(0);
+  // temperature_config.temperature_measurement.max_measured_value =
+  // nullable<int16_t>(50000);
   endpoint_t *temperature_endpoint = temperature_sensor::create(
       node, &temperature_config, ENDPOINT_FLAG_NONE, NULL);
   ABORT_APP_ON_FAILURE(
