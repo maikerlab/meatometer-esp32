@@ -5,3 +5,4 @@ dependencies:
     - if: idf_version >=5.0
     - if: target in [esp32c2]
   hayschan/max6675: ^1.0.6
+  espressif/led_strip: "*"

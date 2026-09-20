@@ -20,9 +20,7 @@
 
 #include <app_priv.h>
 #include <app_reset.h>
-#if CHIP_DEVICE_CONFIG_ENABLE_THREAD
-#include <platform/ESP32/OpenthreadLauncher.h>
-#endif
+#include <hal.h>
 
 #include <app/server/CommissioningWindowManager.h>
 #include <app/server/Server.h>
@@ -38,13 +36,12 @@
 using namespace chip::DeviceLayer;
 #endif
 
-#include "max6675.h"
-
 #include <clusters/temperature_measurement/integration.h>
 
 static const char *TAG = "app_main";
 uint16_t light_endpoint_id = 0;
 uint16_t temperature_endpoint_id = 0;
+static const hal_t *s_hal = nullptr;
 
 using namespace esp_matter;
 using namespace esp_matter::attribute;
@@ -189,11 +186,20 @@ void MeasureTemperature_Task(void *pvParameters) {
     double sum = 0;
     int count = 0;
     for (int i = 0; i < 5; i++) {
-      double data = readCelsius();
+      float data = 0.0f;
+      if (s_hal == nullptr || s_hal->read_temperature(&data) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read temperature");
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+        continue;
+      }
       sum += data;
       count++;
       vTaskDelay(100 /
                  portTICK_PERIOD_MS); // add a short delay between readings
+    }
+    if (count == 0) {
+      vTaskDelay(5000 / portTICK_PERIOD_MS);
+      continue;
     }
     double mean = sum / count;
     ESP_LOGI(TAG, "Mean temperature: %.0f °C", mean);
@@ -222,19 +228,15 @@ extern "C" void app_main() {
 
   MEMORY_PROFILER_DUMP_HEAP_STAT("Bootup");
 
+  s_hal = hal_esp_idf();
+  ABORT_APP_ON_FAILURE(s_hal != nullptr && s_hal->init() == ESP_OK,
+                       ESP_LOGE(TAG, "Failed to initialize HAL"));
+  s_hal->set_led(HAL_LED_YELLOW);
+
   /* Initialize driver */
   app_driver_handle_t light_handle = app_driver_light_init();
   app_driver_handle_t button_handle = app_driver_button_init();
   app_reset_button_register(button_handle);
-
-  // MAX6675 temperature sensor initialization
-  MAX6675_structure user_max6675_set = {
-      // Change the constants in sdkconfig or menuconfig
-      .MAX6675_SCK = GPIO_NUM_0,
-      .MAX6675_CS = GPIO_NUM_1,
-      .MAX6675_MISO = GPIO_NUM_2,
-      .TEMPERATURE_CALIBRATION_COEFFICIENT = 0.25};
-  MAX6675_init(user_max6675_set);
 
   /* Create a Matter node and add the mandatory Root Node device type on
    * endpoint 0 */
@@ -310,26 +312,6 @@ extern "C" void app_main() {
                      ColorControl::Attributes::ColorTemperatureMireds::Id);
   attribute::set_deferred_persistence(color_temp_attribute);
 
-#if CHIP_DEVICE_CONFIG_ENABLE_THREAD && CHIP_DEVICE_CONFIG_ENABLE_WIFI_STATION
-  // Enable secondary network interface
-  secondary_network_interface::config_t secondary_network_interface_config;
-  endpoint = endpoint::secondary_network_interface::create(
-      node, &secondary_network_interface_config, ENDPOINT_FLAG_NONE, nullptr);
-  ABORT_APP_ON_FAILURE(
-      endpoint != nullptr,
-      ESP_LOGE(TAG, "Failed to create secondary network interface endpoint"));
-#endif
-
-#if CHIP_DEVICE_CONFIG_ENABLE_THREAD
-  /* Set OpenThread platform config */
-  esp_openthread_platform_config_t config = {
-      .radio_config = ESP_OPENTHREAD_DEFAULT_RADIO_CONFIG(),
-      .host_config = ESP_OPENTHREAD_DEFAULT_HOST_CONFIG(),
-      .port_config = ESP_OPENTHREAD_DEFAULT_PORT_CONFIG(),
-  };
-  set_openthread_platform_config(&config);
-#endif
-
 #ifdef CONFIG_ENABLE_SET_CERT_DECLARATION_API
   auto *dac_provider = get_dac_provider();
 #ifdef CONFIG_SEC_CERT_DAC_PROVIDER
@@ -367,9 +349,6 @@ extern "C" void app_main() {
   esp_matter::console::wifi_register_commands();
   esp_matter::console::factoryreset_register_commands();
   esp_matter::console::attribute_register_commands();
-#if CONFIG_OPENTHREAD_CLI
-  esp_matter::console::otcli_register_commands();
-#endif
   esp_matter::console::init();
 #endif
 
