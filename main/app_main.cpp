@@ -20,7 +20,7 @@
 
 #include <app_priv.h>
 #include <app_reset.h>
-#include <hal.h>
+#include <hal_esp_idf.h>
 
 #include <app/server/CommissioningWindowManager.h>
 #include <app/server/Server.h>
@@ -41,7 +41,7 @@ using namespace chip::DeviceLayer;
 static const char *TAG = "app_main";
 uint16_t light_endpoint_id = 0;
 uint16_t temperature_endpoint_id = 0;
-static const hal_t *s_hal = nullptr;
+static EspIdfHal s_hal;
 
 using namespace esp_matter;
 using namespace esp_matter::attribute;
@@ -182,12 +182,14 @@ app_attribute_update_cb(attribute::callback_type_t type, uint16_t endpoint_id,
 }
 
 void MeasureTemperature_Task(void *pvParameters) {
+  Hal *hal = static_cast<Hal *>(pvParameters);
   while (1) {
     double sum = 0;
     int count = 0;
     for (int i = 0; i < 5; i++) {
       float data = 0.0f;
-      if (s_hal == nullptr || s_hal->read_temperature(&data) != ESP_OK) {
+      if (hal == nullptr ||
+          hal->read_temperature(data) != HalStatus::Ok) {
         ESP_LOGE(TAG, "Failed to read temperature");
         vTaskDelay(100 / portTICK_PERIOD_MS);
         continue;
@@ -228,13 +230,11 @@ extern "C" void app_main() {
 
   MEMORY_PROFILER_DUMP_HEAP_STAT("Bootup");
 
-  s_hal = hal_esp_idf();
-  ABORT_APP_ON_FAILURE(s_hal != nullptr && s_hal->init() == ESP_OK,
+  ABORT_APP_ON_FAILURE(s_hal.init() == HalStatus::Ok,
                        ESP_LOGE(TAG, "Failed to initialize HAL"));
-  s_hal->set_led(HAL_LED_YELLOW);
+  s_hal.set_led(LedColor::Yellow);
 
   /* Initialize driver */
-  app_driver_handle_t light_handle = app_driver_light_init();
   app_driver_handle_t button_handle = app_driver_button_init();
   app_reset_button_register(button_handle);
 
@@ -266,7 +266,7 @@ extern "C" void app_main() {
 
   // endpoint handles can be used to add/modify clusters.
   endpoint_t *endpoint = extended_color_light::create(
-      node, &light_config, ENDPOINT_FLAG_NONE, light_handle);
+      node, &light_config, ENDPOINT_FLAG_NONE, &s_hal);
   ABORT_APP_ON_FAILURE(
       endpoint != nullptr,
       ESP_LOGE(TAG, "Failed to create extended color light endpoint"));
@@ -331,7 +331,7 @@ extern "C" void app_main() {
   MEMORY_PROFILER_DUMP_HEAP_STAT("matter started");
 
   xTaskCreate(MeasureTemperature_Task, "MeasureTemperature_Task", 2 * 1024,
-              NULL, 3, NULL);
+              &s_hal, 3, NULL);
 
   /* Starting driver with default values */
   app_driver_light_set_defaults(light_endpoint_id);

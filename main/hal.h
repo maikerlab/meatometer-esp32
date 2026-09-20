@@ -1,24 +1,31 @@
 #pragma once
 
-#include <esp_err.h>
+#include <cstdint>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+enum class HalStatus {
+    Ok,
+    Failed,
+    InvalidArgument,
+    NotReady,
+};
 
-typedef enum {
-    HAL_LED_YELLOW,
-    HAL_LED_GREEN,
-} hal_led_color_t;
+enum class LedColor {
+    Yellow,
+    Green,
+};
 
-typedef struct {
-    esp_err_t (*init)(void);
-    esp_err_t (*set_led)(hal_led_color_t color);
-    esp_err_t (*read_temperature)(float *celsius);
-} hal_t;
+class Hal {
+public:
+    virtual ~Hal() = default;
 
-const hal_t *hal_esp_idf(void);
+    virtual HalStatus init() = 0;
+    virtual HalStatus set_led(LedColor color) = 0;
+    virtual HalStatus read_temperature(float &celsius) = 0;
 
-#ifdef __cplusplus
-}
-#endif
+    virtual HalStatus set_power(bool on) = 0;
+    virtual HalStatus set_brightness(int percent) = 0;
+    virtual HalStatus set_hue(int degrees) = 0;
+    virtual HalStatus set_saturation(int percent) = 0;
+    virtual HalStatus set_color_temperature(std::uint32_t kelvin_factor) = 0;
+    virtual HalStatus set_xy(std::uint16_t x, std::uint16_t y) = 0;
+};
