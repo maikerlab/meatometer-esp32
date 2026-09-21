@@ -1,4 +1,12 @@
-menu "Example Configuration"
+menu "Meatometer Configuration"
+
+    config MEATOMETER_ENABLE_MATTER
+        bool "Enable Matter connectivity"
+        default y
+        help
+            Expose every probe as a Matter TemperatureMeasurement endpoint over
+            Wi-Fi. Disable for the v1 standalone prototype, which measures and
+            displays locally with no network stack at all.
 
     config ENABLE_MEMORY_PROFILING
         bool "Enable Memory Profiling"
@@ -8,4 +16,3 @@ menu "Example Configuration"
             This will allow you to monitor memory usage during runtime.
 
 endmenu
-

@@ -1,4 +1,4 @@
-idf_component_register(SRC_DIRS          "."
+idf_component_register(SRC_DIRS          "." "hal" "probes" "hmi" "settings" "connectivity"
                        PRIV_INCLUDE_DIRS  "." "${ESP_MATTER_PATH}/examples/common/utils")
 
 if (CONFIG_ENABLE_SET_CERT_DECLARATION_API)
