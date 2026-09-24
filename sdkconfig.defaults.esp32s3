@@ -1,1 +1,14 @@
 CONFIG_IDF_TARGET="esp32s3"
+
+# CoreS3 SE has 8 MB quad PSRAM. LVGL draw buffers live there.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# Partial redraw buffer for the 320x240 panel (BSP display menu).
+CONFIG_BSP_LCD_DRAW_BUF_HEIGHT=40
+CONFIG_BSP_LCD_DRAW_BUF_DOUBLE=y
+
+# Name (small) and temperature (large) inside each probe circle.
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_20=y

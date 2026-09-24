@@ -1,6 +1,7 @@
 #include "hal/m5stack_hal.h"
 
 #include <esp_log.h>
+#include <bsp/esp-bsp.h>
 #include <device.h>
 #include <led_driver.h>
 
@@ -71,11 +72,13 @@ Result M5StackHal::set_led(LedColor color)
 
 Result M5StackHal::set_display_power(bool on)
 {
-    // TODO: drive the CoreS3 SE backlight via AXP2101 once hardware is wired.
-    if (display_on_ != on) {
-        display_on_ = on;
-        ESP_LOGI(TAG, "Display power %s", on ? "on" : "off");
+    const esp_err_t err = on ? bsp_display_backlight_on() : bsp_display_backlight_off();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set backlight: %s", esp_err_to_name(err));
+        return from_esp_err(err);
     }
+
+    display_on_ = on;
     return Result::Ok;
 }
 

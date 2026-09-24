@@ -1,11 +1,14 @@
 #include "hmi/hmi.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include <esp_log.h>
 #include <button_gpio.h>
+#include <bsp/esp-bsp.h>
 #include <device.h>
 #include <iot_button.h>
+#include <lvgl.h>
 
 #include "esp_status.h"
 
@@ -15,6 +18,44 @@ static const char *TAG = "hmi";
 static constexpr std::uint16_t kFactoryResetPressMs = 10000;
 
 static constexpr std::size_t kInputQueueLength = 4;
+
+/** Diameter of one probe circle on the 320x240 panel, leaving a gap between three of them. */
+static constexpr int kCircleDiameterPx = 96;
+static constexpr int kCircleBorderPx = 3;
+static constexpr int kCircleGapPx = 8;
+
+/** Give up the redraw rather than stalling the UI task on the LVGL mutex. */
+static constexpr std::uint32_t kDisplayLockTimeoutMs = 50;
+
+static lv_obj_t *make_circle(lv_obj_t *parent, lv_obj_t **name_label, lv_obj_t **temperature_label)
+{
+    lv_obj_t *circle = lv_obj_create(parent);
+    lv_obj_set_size(circle, kCircleDiameterPx, kCircleDiameterPx);
+    lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_color(circle, lv_palette_main(LV_PALETTE_BLUE), 0);
+    lv_obj_set_style_border_width(circle, kCircleBorderPx, 0);
+    lv_obj_set_style_bg_color(circle, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(circle, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(circle, 6, 0);
+    lv_obj_set_style_text_color(circle, lv_color_white(), 0);
+    lv_obj_set_flex_flow(circle, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(circle, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scrollable(circle, false);
+
+    *name_label = lv_label_create(circle);
+    lv_obj_set_style_text_font(*name_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_align(*name_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(*name_label, kCircleDiameterPx - 16);
+    lv_label_set_long_mode(*name_label, LV_LABEL_LONG_DOT);
+    lv_label_set_text(*name_label, "");
+
+    *temperature_label = lv_label_create(circle);
+    lv_obj_set_style_text_font(*temperature_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_align(*temperature_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(*temperature_label, "");
+
+    return circle;
+}
 
 Result Hmi::init()
 {
@@ -47,6 +88,50 @@ Result Hmi::init()
     }
 
     button_handle_ = handle;
+
+    if (bsp_display_start() == nullptr) {
+        ESP_LOGE(TAG, "Failed to start CoreS3 display");
+        return Result::Failed;
+    }
+
+    if (!bsp_display_lock(kDisplayLockTimeoutMs)) {
+        ESP_LOGE(TAG, "Failed to lock display during init");
+        return Result::Failed;
+    }
+
+    lv_obj_t *screen = lv_screen_active();
+    lv_obj_set_style_bg_color(screen, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+
+    lv_obj_t *row = lv_obj_create(screen);
+    lv_obj_set_size(row, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_style_pad_column(row, kCircleGapPx, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scrollable(row, false);
+
+    lv_obj_t *empty = lv_label_create(screen);
+    lv_obj_set_style_text_color(empty, lv_color_white(), 0);
+    lv_obj_set_style_text_font(empty, &lv_font_montserrat_12, 0);
+    lv_label_set_text(empty, "No probes connected");
+    lv_obj_center(empty);
+    lv_obj_set_hidden(empty, true);
+    empty_label_ = empty;
+
+    for (std::size_t i = 0; i < kProbeCircleCount; i++) {
+        lv_obj_t *name = nullptr;
+        lv_obj_t *temperature = nullptr;
+        circles_[i].root = make_circle(row, &name, &temperature);
+        circles_[i].name = name;
+        circles_[i].temperature = temperature;
+        lv_obj_set_hidden(static_cast<lv_obj_t *>(circles_[i].root), true);
+    }
+
+    bsp_display_unlock();
+    display_ready_ = true;
     return Result::Ok;
 }
 
@@ -109,19 +194,57 @@ void Hmi::render(const DeviceSnapshot &snapshot)
         return;
     }
 
-    output_lines(lines, count);
+    if (!draw_probes(snapshot, lines, count)) {
+        return;
+    }
 
     for (std::size_t i = 0; i < count; i++) {
-        snprintf(rendered_lines_[i], kScreenLineSize, "%s", lines[i]);
+        std::memcpy(rendered_lines_[i], lines[i], kScreenLineSize);
     }
     rendered_count_ = count;
     rendered_ = true;
 }
 
-void Hmi::output_lines(const ScreenLine *lines, std::size_t count)
+bool Hmi::draw_probes(const DeviceSnapshot &snapshot, const ScreenLine *lines, std::size_t count)
 {
-    // TODO: draw with M5GFX once the CoreS3 SE panel is wired (UI-1).
-    for (std::size_t i = 0; i < count; i++) {
-        ESP_LOGI(TAG, "%s", lines[i]);
+    if (!display_ready_) {
+        return false;
     }
+    if (!bsp_display_lock(kDisplayLockTimeoutMs)) {
+        return false;
+    }
+
+    std::size_t shown = 0;
+    for (std::uint8_t i = 0; i < snapshot.probe_count && shown < kProbeCircleCount; i++) {
+        const ProbeReading &reading = snapshot.probes[i];
+        if (!reading.connected) {
+            continue;
+        }
+
+        auto *root = static_cast<lv_obj_t *>(circles_[shown].root);
+        auto *name = static_cast<lv_obj_t *>(circles_[shown].name);
+        auto *temperature = static_cast<lv_obj_t *>(circles_[shown].temperature);
+
+        char value[16];
+        snprintf(value, sizeof(value), "%.1f\u00B0C", reading.celsius);
+        lv_label_set_text(name, reading.name);
+        lv_label_set_text(temperature, value);
+        lv_obj_set_hidden(root, false);
+        shown++;
+    }
+
+    for (std::size_t i = shown; i < kProbeCircleCount; i++) {
+        lv_obj_set_hidden(static_cast<lv_obj_t *>(circles_[i].root), true);
+    }
+
+    auto *empty = static_cast<lv_obj_t *>(empty_label_);
+    if (shown == 0) {
+        lv_label_set_text(empty, count > 0 ? lines[0] : "No probes connected");
+        lv_obj_set_hidden(empty, false);
+    } else {
+        lv_obj_set_hidden(empty, true);
+    }
+
+    bsp_display_unlock();
+    return true;
 }

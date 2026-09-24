@@ -16,8 +16,8 @@ using ScreenLine = char[kScreenLineSize];
  * Main screen content (UI-2): name and temperature of every connected probe.
  * Disconnected probes are not listed.
  *
- * Pure formatting, no hardware, so it stays valid when the renderer moves
- * from the log to M5GFX.
+ * Pure formatting, no hardware. The LVGL circles use the readings directly;
+ * this text is the empty-state line and the redraw check.
  */
 class MainScreen {
 public:
