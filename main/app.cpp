@@ -32,7 +32,14 @@ static constexpr std::uint32_t kUiStackSize = 4096;
 static constexpr UBaseType_t kSamplerPriority = 3;
 static constexpr UBaseType_t kUiPriority = 2;
 
-/** Chamber probe wiring, see ADR 01. Replaced by KmeterProbe on I2C later. */
+/**
+ * Placeholder until the Kmeter Unit is on the I2C bus (ADR 01).
+ * GPIO0 is I2S MCLK on the CoreS3 SE, and GPIO1/2 are not a wired MAX6675,
+ * so this probe is not started. Driving GPIO0 low also looked like the
+ * devkit button being held.
+ */
+static constexpr bool kChamberProbeEnabled = false;
+
 static constexpr Max6675Probe::Config kChamberProbeConfig = {
     .sck_gpio = 0,
     .cs_gpio = 1,
@@ -81,7 +88,9 @@ Result App::init()
     }
     hmi_.update_led(connectivity_->state());
 
-    probes_.add(&chamber_probe_);
+    if (kChamberProbeEnabled) {
+        probes_.add(&chamber_probe_);
+    }
     probes_.add(&food_probe_1_);
     probes_.add(&food_probe_2_);
     if (probes_.init() != Result::Ok) {

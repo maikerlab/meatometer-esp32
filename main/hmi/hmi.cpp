@@ -6,7 +6,7 @@
 #include <esp_log.h>
 #include <button_gpio.h>
 #include <bsp/esp-bsp.h>
-#include <device.h>
+#include <driver/gpio.h>
 #include <iot_button.h>
 #include <lvgl.h>
 
@@ -16,6 +16,13 @@ static const char *TAG = "hmi";
 
 /** UI-3: a press of at least this long triggers a factory reset. */
 static constexpr std::uint16_t kFactoryResetPressMs = 10000;
+
+/**
+ * PORT.B PB_IN on the CoreS3 SE bottom bus (ADR 01).
+ * The ESP-Matter devkit HAL button is GPIO0, which on this board is I2S MCLK
+ * and reads as held. That fired this long-press about 10 s after boot.
+ */
+static constexpr gpio_num_t kButtonGpio = GPIO_NUM_8;
 
 static constexpr std::size_t kInputQueueLength = 4;
 
@@ -69,7 +76,12 @@ Result Hmi::init()
         .long_press_time = kFactoryResetPressMs,
         .short_press_time = 0,
     };
-    const button_gpio_config_t btn_gpio_cfg = button_driver_get_config();
+    const button_gpio_config_t btn_gpio_cfg = {
+        .gpio_num = kButtonGpio,
+        .active_level = 0,
+        .enable_power_save = false,
+        .disable_pull = false,
+    };
 
     esp_err_t err = iot_button_new_gpio_device(&btn_cfg, &btn_gpio_cfg, &handle);
     if (err != ESP_OK) {
