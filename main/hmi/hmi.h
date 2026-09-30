@@ -4,6 +4,7 @@
 #include <freertos/queue.h>
 
 #include "app_event.h"
+#include "connectivity/connectivity.h"
 #include "hal/hal.h"
 #include "hmi/main_screen.h"
 #include "hmi/status_led.h"
@@ -44,6 +45,8 @@ private:
     bool draw_probes(const DeviceSnapshot &snapshot, const ScreenLine *lines, std::size_t count);
     /** QR plus pairing code. False if the panel lock was busy. */
     bool draw_pairing();
+    /** Writes the stored onboarding payload into the widgets. Caller holds the display lock. */
+    void apply_onboarding_locked();
 
     Hal &hal_;
     StatusLed led_;
@@ -73,4 +76,13 @@ private:
     std::size_t rendered_count_{0};
     bool rendered_{false};
     bool rendered_pairing_{false};
+
+    /**
+     * Last onboarding payload from connectivity. A missed display lock must not
+     * discard it: the pairing screen is drawn later, and that draw is what
+     * latches rendered_pairing_.
+     */
+    char onboarding_qr_[kOnboardingPayloadSize]{};
+    char onboarding_code_[kManualPairingCodeSize]{};
+    bool onboarding_pending_{false};
 };

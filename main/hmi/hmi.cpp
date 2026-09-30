@@ -240,23 +240,37 @@ Result Hmi::set_display_power(bool on)
 
 void Hmi::set_onboarding(const char *qr_payload, const char *pairing_code)
 {
-    if (!display_ready_ || !bsp_display_lock(kDisplayLockTimeoutMs)) {
-        ESP_LOGW(TAG, "Display busy, onboarding payload not drawn");
+    snprintf(onboarding_qr_, sizeof(onboarding_qr_), "%s", qr_payload != nullptr ? qr_payload : "");
+    snprintf(onboarding_code_, sizeof(onboarding_code_), "%s", pairing_code != nullptr ? pairing_code : "");
+    onboarding_pending_ = true;
+    // Force the next commissioning frame to encode this payload. Leaving
+    // rendered_pairing_ set would skip draw_pairing forever.
+    rendered_ = false;
+    rendered_pairing_ = false;
+
+    if (!display_ready_) {
+        return;
+    }
+    if (!bsp_display_lock(kDisplayLockTimeoutMs)) {
+        ESP_LOGW(TAG, "Display busy, onboarding payload kept for the next draw");
         return;
     }
 
+    apply_onboarding_locked();
+    bsp_display_unlock();
+}
+
+void Hmi::apply_onboarding_locked()
+{
     auto *qr = static_cast<lv_obj_t *>(pairing_qr_);
     auto *code = static_cast<lv_obj_t *>(pairing_code_);
-    if (qr_payload != nullptr && qr_payload[0] != '\0') {
-        if (lv_qrcode_update(qr, qr_payload, static_cast<uint32_t>(strlen(qr_payload))) != LV_RESULT_OK) {
+    if (onboarding_qr_[0] != '\0') {
+        if (lv_qrcode_update(qr, onboarding_qr_, static_cast<uint32_t>(strlen(onboarding_qr_))) != LV_RESULT_OK) {
             ESP_LOGE(TAG, "Failed to encode onboarding QR");
         }
     }
-    lv_label_set_text(code, pairing_code != nullptr ? pairing_code : "");
-
-    bsp_display_unlock();
-    rendered_ = false;
-    rendered_pairing_ = false;
+    lv_label_set_text(code, onboarding_code_);
+    onboarding_pending_ = false;
 }
 
 void Hmi::render(const DeviceSnapshot &snapshot)
@@ -270,6 +284,11 @@ void Hmi::render(const DeviceSnapshot &snapshot)
             return;
         }
         if (!draw_pairing()) {
+            return;
+        }
+        // The widgets still don't hold this payload. Latching rendered_pairing_
+        // here would skip every later encode.
+        if (onboarding_pending_) {
             return;
         }
         rendered_ = true;
@@ -311,6 +330,10 @@ bool Hmi::draw_pairing()
 
     lv_obj_set_hidden(static_cast<lv_obj_t *>(probes_row_), true);
     lv_obj_set_hidden(static_cast<lv_obj_t *>(empty_label_), true);
+
+    if (onboarding_pending_) {
+        apply_onboarding_locked();
+    }
 
     auto *code = static_cast<lv_obj_t *>(pairing_code_);
     const char *text = lv_label_get_text(code);
