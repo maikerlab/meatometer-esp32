@@ -1,5 +1,7 @@
 #include "connectivity/matter_connectivity.h"
 
+#include <cstring>
+
 #include <esp_log.h>
 
 #include <esp_matter.h>
@@ -9,6 +11,9 @@
 #include <app/server/CommissioningWindowManager.h>
 #include <app/server/Server.h>
 #include <clusters/temperature_measurement/integration.h>
+#include <platform/PlatformManager.h>
+#include <setup_payload/OnboardingCodesUtil.h>
+#include <setup_payload/QRCodeSetupPayloadGenerator.h>
 
 #include <log_heap_numbers.h>
 
@@ -36,6 +41,10 @@ static constexpr auto k_timeout_seconds = 300;
 /** CN-9: the cluster cannot represent more than 327.67 C. */
 static constexpr std::int16_t kMeasuredValueMax = 32767;
 static constexpr std::int16_t kMeasuredValueMin = -27315;
+
+static_assert(kOnboardingPayloadSize >=
+              chip::QRCodeBasicSetupPayloadGenerator::kMaxQRCodeBase38RepresentationLength + 1);
+static_assert(kManualPairingCodeSize >= static_cast<std::size_t>(chip::kManualSetupLongCodeCharLength + 2));
 
 static MatterConnectivity *s_instance = nullptr;
 
@@ -71,6 +80,10 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 
     case chip::DeviceLayer::DeviceEventType::kCommissioningComplete:
         ESP_LOGI(TAG, "Commissioning complete");
+        if (s_instance != nullptr) {
+            s_instance->note_commissioning_completed();
+            s_instance->refresh_commissioned();
+        }
         set_state(ConnectivityState::Connected);
         MEMORY_PROFILER_DUMP_HEAP_STAT("commissioning complete");
         break;
@@ -95,11 +108,18 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 
     case chip::DeviceLayer::DeviceEventType::kCommissioningWindowClosed:
         ESP_LOGI(TAG, "Commissioning window closed");
+        if (s_instance != nullptr) {
+            s_instance->on_window_closed();
+            s_instance->refresh_commissioned();
+        }
         break;
 
     case chip::DeviceLayer::DeviceEventType::kFabricRemoved: {
         ESP_LOGI(TAG, "Fabric removed successfully");
         set_state(ConnectivityState::Disconnected);
+        if (s_instance != nullptr) {
+            s_instance->refresh_commissioned();
+        }
         if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
             chip::CommissioningWindowManager &commissionMgr =
                 chip::Server::GetInstance().GetCommissioningWindowManager();
@@ -126,6 +146,9 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 
     case chip::DeviceLayer::DeviceEventType::kFabricCommitted:
         ESP_LOGI(TAG, "Fabric is committed");
+        if (s_instance != nullptr) {
+            s_instance->refresh_commissioned();
+        }
         break;
 
     case chip::DeviceLayer::DeviceEventType::kBLEDeinitialized:
@@ -213,7 +236,71 @@ Result MatterConnectivity::start(std::uint8_t probe_count)
     esp_matter::console::init();
 #endif
 
+    chip::DeviceLayer::PlatformMgr().LockChipStack();
+    refresh_commissioned();
+    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+
+    if (!load_onboarding()) {
+        ESP_LOGW(TAG, "Failed to read the Matter onboarding payload");
+    }
+
     return Result::Ok;
+}
+
+void MatterConnectivity::refresh_commissioned()
+{
+    commissioned_.store(chip::Server::GetInstance().GetFabricTable().FabricCount() > 0);
+}
+
+void MatterConnectivity::on_window_closed()
+{
+    if (state_.load() != ConnectivityState::Commissioning) {
+        return;
+    }
+
+    const bool has_fabric = chip::Server::GetInstance().GetFabricTable().FabricCount() > 0;
+    if (has_fabric && commissioning_completed_.load()) {
+        set_state(ConnectivityState::Connected);
+    } else {
+        set_state(ConnectivityState::Disconnected);
+    }
+}
+
+bool MatterConnectivity::load_onboarding()
+{
+    const chip::RendezvousInformationFlags flags(chip::RendezvousInformationFlag::kBLE);
+
+    chip::MutableCharSpan qr(qr_payload_, sizeof(qr_payload_));
+    CHIP_ERROR err = GetQRCode(qr, flags);
+    if (err != CHIP_NO_ERROR) {
+        ESP_LOGE(TAG, "GetQRCode failed: %" CHIP_ERROR_FORMAT, err.Format());
+        return false;
+    }
+
+    chip::MutableCharSpan manual(manual_code_, sizeof(manual_code_));
+    err = GetManualPairingCode(manual, flags);
+    if (err != CHIP_NO_ERROR) {
+        ESP_LOGE(TAG, "GetManualPairingCode failed: %" CHIP_ERROR_FORMAT, err.Format());
+        qr_payload_[0] = '\0';
+        return false;
+    }
+
+    onboarding_ready_ = true;
+    ESP_LOGI(TAG, "Onboarding payload ready");
+    return true;
+}
+
+bool MatterConnectivity::copy_onboarding(char *qr, std::size_t qr_size, char *manual, std::size_t manual_size) const
+{
+    if (!onboarding_ready_ || qr == nullptr || manual == nullptr || qr_size == 0 || manual_size == 0) {
+        return false;
+    }
+
+    std::strncpy(qr, qr_payload_, qr_size - 1);
+    qr[qr_size - 1] = '\0';
+    std::strncpy(manual, manual_code_, manual_size - 1);
+    manual[manual_size - 1] = '\0';
+    return true;
 }
 
 void MatterConnectivity::publish(const DeviceSnapshot &snapshot)

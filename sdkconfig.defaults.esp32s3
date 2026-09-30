@@ -5,6 +5,27 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_QUAD=y
 CONFIG_SPIRAM_SPEED_80M=y
 
+# NimBLE host pools default to internal DRAM. By the time CHIPoBLE starts,
+# the BLE controller, Wi-Fi and the panel have taken that RAM, so
+# ble_buf_alloc fails ("hci inits failed") and Matter disables CHIPoBLE.
+# The controller stays in internal DMA memory; only the host moves to PSRAM.
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+
+# PSA SHA-256 for the commissioning window and the CASE server both need an
+# internal buffer. With Wi-Fi left in internal DRAM the second psa_hash_setup
+# returns PSA_ERROR_INSUFFICIENT_MEMORY (-141) and the server aborts.
+# Prefer PSRAM for Wi-Fi/lwIP. That option forces static TX buffers; the
+# default of 16 plus 32 cache buffers is allocated before the BLE controller
+# and its init then fails ("Malloc failed"). Keep the static pool small.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=0
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
+# Matter data model allocations default to internal DRAM. The light example can
+# afford that; this board also has the panel. Put the data model in PSRAM.
+CONFIG_ESP_MATTER_MEM_ALLOC_MODE_EXTERNAL=y
+
 # Partial redraw buffer for the 320x240 panel (BSP display menu).
 CONFIG_BSP_LCD_DRAW_BUF_HEIGHT=40
 CONFIG_BSP_LCD_DRAW_BUF_DOUBLE=y
@@ -12,3 +33,6 @@ CONFIG_BSP_LCD_DRAW_BUF_DOUBLE=y
 # Name (small) and temperature (large) inside each probe circle.
 CONFIG_LV_FONT_MONTSERRAT_12=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
+
+# Matter onboarding QR while the device has no fabric (UI-6).
+CONFIG_LV_USE_QRCODE=y

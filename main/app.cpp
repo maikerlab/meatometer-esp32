@@ -118,6 +118,12 @@ Result App::init()
     last_connectivity_ = connectivity_->state();
     hmi_.update_led(last_connectivity_);
 
+    char qr[kOnboardingPayloadSize];
+    char manual[kManualPairingCodeSize];
+    if (connectivity_->copy_onboarding(qr, sizeof(qr), manual, sizeof(manual))) {
+        hmi_.set_onboarding(qr, manual);
+    }
+
     return Result::Ok;
 }
 
@@ -130,6 +136,9 @@ void App::run()
     }
 
     enter_mode(AppMode::Running);
+    if (connectivity_->state() == ConnectivityState::Commissioning) {
+        enter_mode(AppMode::Commissioning);
+    }
 
     xTaskCreate(sampler_task, "sampler", kSamplerStackSize, this, kSamplerPriority, nullptr);
     xTaskCreate(ui_task, "ui", kUiStackSize, this, kUiPriority, nullptr);
@@ -159,6 +168,7 @@ void App::sampler_loop()
         const TickType_t started = xTaskGetTickCount();
 
         snapshot.connectivity = connectivity_->state();
+        snapshot.commissioned = connectivity_->is_commissioned();
         snapshot.battery_percent = 0;
         snapshot.battery_valid = hal_.read_battery(snapshot.battery_percent) == Result::Ok;
 
@@ -213,6 +223,7 @@ void App::handle_event(const AppEvent &event)
     switch (event.type) {
     case AppEventType::SnapshotReady:
         if (xQueuePeek(snapshot_mailbox_, &snapshot_, 0) == pdTRUE) {
+            snapshot_.commissioned = connectivity_->is_commissioned();
             hmi_.render(snapshot_);
         }
         break;
@@ -263,9 +274,7 @@ void App::enter_mode(AppMode mode)
     case AppMode::Running:
         hmi_.set_display_power(true);
         note_interaction();
-        if (snapshot_.sequence > 0) {
-            hmi_.render(snapshot_);
-        }
+        present();
         break;
 
     case AppMode::DisplayOff:
@@ -273,9 +282,9 @@ void App::enter_mode(AppMode mode)
         break;
 
     case AppMode::Commissioning:
-        // TODO: show the commissioning QR code here (UI-6).
         hmi_.set_display_power(true);
         note_interaction();
+        present();
         break;
 
     case AppMode::FactoryReset:
@@ -284,6 +293,15 @@ void App::enter_mode(AppMode mode)
 
     case AppMode::Boot:
         break;
+    }
+}
+
+void App::present()
+{
+    snapshot_.commissioned = connectivity_->is_commissioned();
+    snapshot_.connectivity = connectivity_->state();
+    if (!snapshot_.commissioned || snapshot_.sequence > 0) {
+        hmi_.render(snapshot_);
     }
 }
 

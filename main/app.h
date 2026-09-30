@@ -49,6 +49,7 @@ private:
     void ui_loop();
     void handle_event(const AppEvent &event);
     void enter_mode(AppMode mode);
+    void present();
     void perform_factory_reset();
     void note_interaction();
 

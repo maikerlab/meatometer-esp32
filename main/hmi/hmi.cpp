@@ -39,6 +39,9 @@ static constexpr int kCircleGapPx = 8;
  */
 static constexpr std::uint32_t kDisplayLockTimeoutMs = 50;
 
+/** Fits a quiet-zone QR and the pairing code on the 320x240 panel. */
+static constexpr int32_t kQrSizePx = 180;
+
 static lv_obj_t *make_circle(lv_obj_t *parent, lv_obj_t **name_label, lv_obj_t **temperature_label)
 {
     lv_obj_t *circle = lv_obj_create(parent);
@@ -106,7 +109,20 @@ Result Hmi::init()
 
     button_handle_ = handle;
 
-    if (bsp_display_start() == nullptr) {
+    // Draw buffers are DMA and live in PSRAM. The BSP default keeps them in
+    // internal DRAM, which is the same pool the BLE controller and PSA SHA-256
+    // need during commissioning.
+    const bsp_display_cfg_t display_cfg = {
+        .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
+        .buffer_size = BSP_LCD_H_RES * CONFIG_BSP_LCD_DRAW_BUF_HEIGHT,
+        .double_buffer = true,
+        .flags = {
+            .buff_dma = true,
+            .buff_spiram = true,
+            .sw_rotate = false,
+        },
+    };
+    if (bsp_display_start_with_config(&display_cfg) == nullptr) {
         ESP_LOGE(TAG, "Failed to start CoreS3 display");
         return Result::Failed;
     }
@@ -121,6 +137,7 @@ Result Hmi::init()
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
 
     lv_obj_t *row = lv_obj_create(screen);
+    probes_row_ = row;
     lv_obj_set_size(row, LV_PCT(100), LV_PCT(100));
     lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(row, 0, 0);
@@ -146,6 +163,32 @@ Result Hmi::init()
         circles_[i].temperature = temperature;
         lv_obj_set_hidden(static_cast<lv_obj_t *>(circles_[i].root), true);
     }
+
+    lv_obj_t *pairing = lv_obj_create(screen);
+    lv_obj_set_size(pairing, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_opa(pairing, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(pairing, 0, 0);
+    lv_obj_set_style_pad_all(pairing, 8, 0);
+    lv_obj_set_style_pad_row(pairing, 8, 0);
+    lv_obj_set_flex_flow(pairing, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(pairing, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scrollable(pairing, false);
+    lv_obj_set_hidden(pairing, true);
+    pairing_root_ = pairing;
+
+    lv_obj_t *qr = lv_qrcode_create(pairing);
+    lv_qrcode_set_size(qr, kQrSizePx);
+    lv_qrcode_set_dark_color(qr, lv_color_black());
+    lv_qrcode_set_light_color(qr, lv_color_white());
+    lv_qrcode_set_quiet_zone(qr, true);
+    pairing_qr_ = qr;
+
+    lv_obj_t *code = lv_label_create(pairing);
+    lv_obj_set_style_text_color(code, lv_color_white(), 0);
+    lv_obj_set_style_text_font(code, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_align(code, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(code, "");
+    pairing_code_ = code;
 
     bsp_display_unlock();
     display_ready_ = true;
@@ -190,8 +233,30 @@ Result Hmi::set_display_power(bool on)
     display_on_ = on;
     if (!on) {
         rendered_ = false;
+        rendered_pairing_ = false;
     }
     return Result::Ok;
+}
+
+void Hmi::set_onboarding(const char *qr_payload, const char *pairing_code)
+{
+    if (!display_ready_ || !bsp_display_lock(kDisplayLockTimeoutMs)) {
+        ESP_LOGW(TAG, "Display busy, onboarding payload not drawn");
+        return;
+    }
+
+    auto *qr = static_cast<lv_obj_t *>(pairing_qr_);
+    auto *code = static_cast<lv_obj_t *>(pairing_code_);
+    if (qr_payload != nullptr && qr_payload[0] != '\0') {
+        if (lv_qrcode_update(qr, qr_payload, static_cast<uint32_t>(strlen(qr_payload))) != LV_RESULT_OK) {
+            ESP_LOGE(TAG, "Failed to encode onboarding QR");
+        }
+    }
+    lv_label_set_text(code, pairing_code != nullptr ? pairing_code : "");
+
+    bsp_display_unlock();
+    rendered_ = false;
+    rendered_pairing_ = false;
 }
 
 void Hmi::render(const DeviceSnapshot &snapshot)
@@ -200,10 +265,22 @@ void Hmi::render(const DeviceSnapshot &snapshot)
         return;
     }
 
+    if (!snapshot.commissioned) {
+        if (rendered_ && rendered_pairing_) {
+            return;
+        }
+        if (!draw_pairing()) {
+            return;
+        }
+        rendered_ = true;
+        rendered_pairing_ = true;
+        return;
+    }
+
     ScreenLine lines[kScreenLineCount];
     const std::size_t count = MainScreen::format(snapshot, lines, kScreenLineCount);
 
-    bool changed = !rendered_ || count != rendered_count_;
+    bool changed = !rendered_ || rendered_pairing_ || count != rendered_count_;
     for (std::size_t i = 0; !changed && i < count; i++) {
         changed = strcmp(lines[i], rendered_lines_[i]) != 0;
     }
@@ -220,6 +297,30 @@ void Hmi::render(const DeviceSnapshot &snapshot)
     }
     rendered_count_ = count;
     rendered_ = true;
+    rendered_pairing_ = false;
+}
+
+bool Hmi::draw_pairing()
+{
+    if (!display_ready_) {
+        return false;
+    }
+    if (!bsp_display_lock(kDisplayLockTimeoutMs)) {
+        return false;
+    }
+
+    lv_obj_set_hidden(static_cast<lv_obj_t *>(probes_row_), true);
+    lv_obj_set_hidden(static_cast<lv_obj_t *>(empty_label_), true);
+
+    auto *code = static_cast<lv_obj_t *>(pairing_code_);
+    const char *text = lv_label_get_text(code);
+    if (text == nullptr || text[0] == '\0') {
+        lv_label_set_text(code, "Pairing code unavailable");
+    }
+
+    lv_obj_set_hidden(static_cast<lv_obj_t *>(pairing_root_), false);
+    bsp_display_unlock();
+    return true;
 }
 
 bool Hmi::draw_probes(const DeviceSnapshot &snapshot, const ScreenLine *lines, std::size_t count)
@@ -230,6 +331,9 @@ bool Hmi::draw_probes(const DeviceSnapshot &snapshot, const ScreenLine *lines, s
     if (!bsp_display_lock(kDisplayLockTimeoutMs)) {
         return false;
     }
+
+    lv_obj_set_hidden(static_cast<lv_obj_t *>(pairing_root_), true);
+    lv_obj_set_hidden(static_cast<lv_obj_t *>(probes_row_), false);
 
     std::size_t shown = 0;
     for (std::uint8_t i = 0; i < snapshot.probe_count && shown < kProbeCircleCount; i++) {

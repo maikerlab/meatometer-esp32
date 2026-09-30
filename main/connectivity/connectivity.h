@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "types.h"
@@ -21,6 +22,32 @@ public:
 
     virtual ConnectivityState state() const = 0;
 
+    /**
+     * False only for a Matter node that has no fabric yet. Null connectivity
+     * is not a Matter device, so it reports commissioned and the probe screen
+     * stays up.
+     */
+    virtual bool is_commissioned() const { return true; }
+
+    /**
+     * Copies the BLE onboarding QR payload and the manual pairing code.
+     * Returns false when there is nothing to pair with.
+     */
+    virtual bool copy_onboarding(char *qr, std::size_t qr_size, char *manual, std::size_t manual_size) const
+    {
+        (void)qr;
+        (void)qr_size;
+        (void)manual;
+        (void)manual_size;
+        return false;
+    }
+
     /** Erases network and fabric credentials (UI-5). May not return. */
     virtual void factory_reset() = 0;
 };
+
+/** `MT:` payload, including the terminator. Matches the CHIP QR buffer. */
+inline constexpr std::size_t kOnboardingPayloadSize = 129;
+
+/** Long manual code, check digit and terminator. */
+inline constexpr std::size_t kManualPairingCodeSize = 22;

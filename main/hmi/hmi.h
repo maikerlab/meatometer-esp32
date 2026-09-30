@@ -28,6 +28,9 @@ public:
     /** Draws the main screen; a no-op while the display is off. */
     void render(const DeviceSnapshot &snapshot);
 
+    /** BLE onboarding QR payload and the manual pairing code shown beneath it. */
+    void set_onboarding(const char *qr_payload, const char *pairing_code);
+
     void update_led(ConnectivityState state) { led_.update(state); }
 
     /** Pops one pending input event. Returns false when there is none. */
@@ -39,6 +42,8 @@ private:
     void post(AppEventType type);
     /** Pushes the snapshot onto the circle widgets. False if the panel lock was busy. */
     bool draw_probes(const DeviceSnapshot &snapshot, const ScreenLine *lines, std::size_t count);
+    /** QR plus pairing code. False if the panel lock was busy. */
+    bool draw_pairing();
 
     Hal &hal_;
     StatusLed led_;
@@ -55,7 +60,11 @@ private:
 
     static constexpr std::size_t kProbeCircleCount = 3;
 
+    void *probes_row_{nullptr};
     void *empty_label_{nullptr};
+    void *pairing_root_{nullptr};
+    void *pairing_qr_{nullptr};
+    void *pairing_code_{nullptr};
     ProbeCircle circles_[kProbeCircleCount]{};
     bool display_ready_{false};
 
@@ -63,4 +72,5 @@ private:
     ScreenLine rendered_lines_[kScreenLineCount]{};
     std::size_t rendered_count_{0};
     bool rendered_{false};
+    bool rendered_pairing_{false};
 };
