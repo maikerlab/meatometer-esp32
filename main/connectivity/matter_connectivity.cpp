@@ -48,6 +48,39 @@ static_assert(kManualPairingCodeSize >= static_cast<std::size_t>(chip::kManualSe
 
 static MatterConnectivity *s_instance = nullptr;
 
+static void set_state(ConnectivityState state);
+
+/**
+ * DNS-SD pairing window after the last fabric is gone.
+ *
+ * Returns false when a fabric is still present, or the window could not be
+ * opened. Open fails with CHIP_ERROR_INCORRECT_STATE while the fail-safe that
+ * removed the fabric is still armed; callers retry once that has cleared.
+ */
+static bool open_dnssd_pairing_window()
+{
+    if (chip::Server::GetInstance().GetFabricTable().FabricCount() != 0) {
+        return false;
+    }
+
+    chip::CommissioningWindowManager &commissionMgr = chip::Server::GetInstance().GetCommissioningWindowManager();
+    if (!commissionMgr.IsCommissioningWindowOpen()) {
+        if (s_instance != nullptr) {
+            s_instance->load_on_network_onboarding();
+        }
+        constexpr auto kTimeoutSeconds = chip::System::Clock::Seconds16(k_timeout_seconds);
+        CHIP_ERROR err = commissionMgr.OpenBasicCommissioningWindow(kTimeoutSeconds,
+                                                                    chip::CommissioningWindowAdvertisement::kDnssdOnly);
+        if (err != CHIP_NO_ERROR) {
+            ESP_LOGE(TAG, "Failed to open commissioning window, err:%" CHIP_ERROR_FORMAT, err.Format());
+            return false;
+        }
+    }
+
+    set_state(ConnectivityState::Commissioning);
+    return true;
+}
+
 #ifdef CONFIG_ENABLE_SET_CERT_DECLARATION_API
 extern const uint8_t cd_start[] asm("_binary_certification_declaration_der_start");
 extern const uint8_t cd_end[] asm("_binary_certification_declaration_der_end");
@@ -75,6 +108,13 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
     switch (event->Type) {
     case chip::DeviceLayer::DeviceEventType::kInterfaceIpAddressChanged:
         ESP_LOGI(TAG, "Interface IP Address changed");
+        // An address arrives mid-pairing, before the commission succeeds or
+        // fails. Leave Commissioning alone so the QR stays up and the LED
+        // stays blue until the window closes.
+        if (s_instance == nullptr || s_instance->state() == ConnectivityState::Commissioning ||
+            !s_instance->is_commissioned()) {
+            break;
+        }
         set_state(ConnectivityState::Connected);
         break;
 
@@ -84,12 +124,25 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
             s_instance->note_commissioning_completed();
             s_instance->refresh_commissioned();
         }
-        set_state(ConnectivityState::Connected);
+        // RemoveFabric leaves the fail-safe armed, so the window open in
+        // kFabricRemoved usually fails. CommissioningComplete disarms it.
+        // With no fabric left, that complete is the removal finishing, not a
+        // successful join.
+        if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
+            if (!open_dnssd_pairing_window()) {
+                set_state(ConnectivityState::Disconnected);
+            }
+        } else {
+            set_state(ConnectivityState::Connected);
+        }
         MEMORY_PROFILER_DUMP_HEAP_STAT("commissioning complete");
         break;
 
     case chip::DeviceLayer::DeviceEventType::kFailSafeTimerExpired:
         ESP_LOGI(TAG, "Commissioning failed, fail safe timer expired");
+        // The expiry handler is still marked busy until its disarm work runs.
+        // Opening here fails; do it on the next turn of the CHIP loop.
+        chip::DeviceLayer::SystemLayer().ScheduleLambda([]() { open_dnssd_pairing_window(); });
         break;
 
     case chip::DeviceLayer::DeviceEventType::kCommissioningSessionStarted:
@@ -102,6 +155,9 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 
     case chip::DeviceLayer::DeviceEventType::kCommissioningWindowOpened:
         ESP_LOGI(TAG, "Commissioning window opened");
+        if (s_instance != nullptr) {
+            s_instance->note_window_opened();
+        }
         set_state(ConnectivityState::Commissioning);
         MEMORY_PROFILER_DUMP_HEAP_STAT("commissioning window opened");
         break;
@@ -116,26 +172,17 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 
     case chip::DeviceLayer::DeviceEventType::kFabricRemoved: {
         ESP_LOGI(TAG, "Fabric removed successfully");
-        set_state(ConnectivityState::Disconnected);
         if (s_instance != nullptr) {
             s_instance->refresh_commissioned();
         }
         if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
-            chip::CommissioningWindowManager &commissionMgr =
-                chip::Server::GetInstance().GetCommissioningWindowManager();
-            constexpr auto kTimeoutSeconds = chip::System::Clock::Seconds16(k_timeout_seconds);
-            if (!commissionMgr.IsCommissioningWindowOpen()) {
-                /* Wi-Fi credentials are kept, so only advertise on DNS-SD.
-                 * The QR has to match that rendezvous; a BLE code will not. */
-                if (s_instance != nullptr) {
-                    s_instance->load_on_network_onboarding();
-                }
-                CHIP_ERROR err = commissionMgr.OpenBasicCommissioningWindow(
-                    kTimeoutSeconds, chip::CommissioningWindowAdvertisement::kDnssdOnly);
-                if (err != CHIP_NO_ERROR) {
-                    ESP_LOGE(TAG, "Failed to open commissioning window, err:%" CHIP_ERROR_FORMAT, err.Format());
-                }
+            // Wi-Fi credentials are kept, so the new window advertises on
+            // DNS-SD only. The QR has to match that rendezvous.
+            if (!open_dnssd_pairing_window()) {
+                set_state(ConnectivityState::Disconnected);
             }
+        } else {
+            set_state(ConnectivityState::Disconnected);
         }
         break;
     }
@@ -256,14 +303,21 @@ void MatterConnectivity::refresh_commissioned()
     commissioned_.store(chip::Server::GetInstance().GetFabricTable().FabricCount() > 0);
 }
 
+void MatterConnectivity::note_window_opened()
+{
+    refresh_commissioned();
+    retained_fabric_.store(commissioned_.load());
+}
+
 void MatterConnectivity::on_window_closed()
 {
-    if (state_.load() != ConnectivityState::Commissioning) {
-        return;
-    }
-
+    // Do not require Commissioning here. Wi-Fi stores Connected as soon as it
+    // has an address, which is the usual path through pairing, so the window
+    // often closes from Connected. A fail-safe or timeout with no fabric must
+    // still leave the LED yellow.
     const bool has_fabric = chip::Server::GetInstance().GetFabricTable().FabricCount() > 0;
-    if (has_fabric && commissioning_completed_.load()) {
+    const bool paired = commissioning_completed_.load() || retained_fabric_.load();
+    if (has_fabric && paired) {
         set_state(ConnectivityState::Connected);
     } else {
         set_state(ConnectivityState::Disconnected);

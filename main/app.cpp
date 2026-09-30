@@ -256,7 +256,9 @@ void App::handle_event(const AppEvent &event)
         const ConnectivityState state = connectivity_->state();
         hmi_.update_led(state);
         if (state == ConnectivityState::Commissioning) {
-            if (mode_ == AppMode::Running) {
+            // Also from DisplayOff: an idle screen must wake onto the QR when
+            // the last fabric is removed.
+            if (mode_ != AppMode::Commissioning && mode_ != AppMode::FactoryReset) {
                 enter_mode(AppMode::Commissioning);
             }
         } else if (mode_ == AppMode::Commissioning) {

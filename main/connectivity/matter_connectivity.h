@@ -29,8 +29,13 @@ public:
      */
     bool load_on_network_onboarding();
     void note_commissioning_completed() { commissioning_completed_.store(true); }
+    void note_window_opened();
     void refresh_commissioned();
-    /** Leaves commissioning: green only after a completed commission that still has a fabric. */
+    /**
+     * Leaves commissioning. Green only when a fabric is still present and it
+     * was already there when this window opened, or this commission completed.
+     * Wi-Fi having an address is not enough: that happens before pairing finishes.
+     */
     void on_window_closed();
 
 private:
@@ -39,6 +44,8 @@ private:
     std::atomic<ConnectivityState> state_{ConnectivityState::Disconnected};
     std::atomic<bool> commissioned_{false};
     std::atomic<bool> commissioning_completed_{false};
+    /** Fabric already present when the current commissioning window opened. */
+    std::atomic<bool> retained_fabric_{false};
     std::atomic<std::uint32_t> onboarding_epoch_{0};
     std::uint16_t endpoint_ids_[kMaxProbes]{};
     std::uint8_t endpoint_count_{0};
