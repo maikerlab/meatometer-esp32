@@ -1,5 +1,7 @@
 #include "connectivity/matter_connectivity.h"
 
+#include <cstring>
+
 #include <esp_log.h>
 
 #include <esp_matter.h>
@@ -9,6 +11,9 @@
 #include <app/server/CommissioningWindowManager.h>
 #include <app/server/Server.h>
 #include <clusters/temperature_measurement/integration.h>
+#include <platform/PlatformManager.h>
+#include <setup_payload/OnboardingCodesUtil.h>
+#include <setup_payload/QRCodeSetupPayloadGenerator.h>
 
 #include <log_heap_numbers.h>
 
@@ -37,7 +42,44 @@ static constexpr auto k_timeout_seconds = 300;
 static constexpr std::int16_t kMeasuredValueMax = 32767;
 static constexpr std::int16_t kMeasuredValueMin = -27315;
 
+static_assert(kOnboardingPayloadSize >=
+              chip::QRCodeBasicSetupPayloadGenerator::kMaxQRCodeBase38RepresentationLength + 1);
+static_assert(kManualPairingCodeSize >= static_cast<std::size_t>(chip::kManualSetupLongCodeCharLength + 2));
+
 static MatterConnectivity *s_instance = nullptr;
+
+static void set_state(ConnectivityState state);
+
+/**
+ * DNS-SD pairing window after the last fabric is gone.
+ *
+ * Returns false when a fabric is still present, or the window could not be
+ * opened. Open fails with CHIP_ERROR_INCORRECT_STATE while the fail-safe that
+ * removed the fabric is still armed; callers retry once that has cleared.
+ */
+static bool open_dnssd_pairing_window()
+{
+    if (chip::Server::GetInstance().GetFabricTable().FabricCount() != 0) {
+        return false;
+    }
+
+    chip::CommissioningWindowManager &commissionMgr = chip::Server::GetInstance().GetCommissioningWindowManager();
+    if (!commissionMgr.IsCommissioningWindowOpen()) {
+        if (s_instance != nullptr) {
+            s_instance->load_on_network_onboarding();
+        }
+        constexpr auto kTimeoutSeconds = chip::System::Clock::Seconds16(k_timeout_seconds);
+        CHIP_ERROR err = commissionMgr.OpenBasicCommissioningWindow(kTimeoutSeconds,
+                                                                    chip::CommissioningWindowAdvertisement::kDnssdOnly);
+        if (err != CHIP_NO_ERROR) {
+            ESP_LOGE(TAG, "Failed to open commissioning window, err:%" CHIP_ERROR_FORMAT, err.Format());
+            return false;
+        }
+    }
+
+    set_state(ConnectivityState::Commissioning);
+    return true;
+}
 
 #ifdef CONFIG_ENABLE_SET_CERT_DECLARATION_API
 extern const uint8_t cd_start[] asm("_binary_certification_declaration_der_start");
@@ -66,17 +108,41 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
     switch (event->Type) {
     case chip::DeviceLayer::DeviceEventType::kInterfaceIpAddressChanged:
         ESP_LOGI(TAG, "Interface IP Address changed");
+        // An address arrives mid-pairing, before the commission succeeds or
+        // fails. Leave Commissioning alone so the QR stays up and the LED
+        // stays blue until the window closes.
+        if (s_instance == nullptr || s_instance->state() == ConnectivityState::Commissioning ||
+            !s_instance->is_commissioned()) {
+            break;
+        }
         set_state(ConnectivityState::Connected);
         break;
 
     case chip::DeviceLayer::DeviceEventType::kCommissioningComplete:
         ESP_LOGI(TAG, "Commissioning complete");
-        set_state(ConnectivityState::Connected);
+        if (s_instance != nullptr) {
+            s_instance->note_commissioning_completed();
+            s_instance->refresh_commissioned();
+        }
+        // RemoveFabric leaves the fail-safe armed, so the window open in
+        // kFabricRemoved usually fails. CommissioningComplete disarms it.
+        // With no fabric left, that complete is the removal finishing, not a
+        // successful join.
+        if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
+            if (!open_dnssd_pairing_window()) {
+                set_state(ConnectivityState::Disconnected);
+            }
+        } else {
+            set_state(ConnectivityState::Connected);
+        }
         MEMORY_PROFILER_DUMP_HEAP_STAT("commissioning complete");
         break;
 
     case chip::DeviceLayer::DeviceEventType::kFailSafeTimerExpired:
         ESP_LOGI(TAG, "Commissioning failed, fail safe timer expired");
+        // The expiry handler is still marked busy until its disarm work runs.
+        // Opening here fails; do it on the next turn of the CHIP loop.
+        chip::DeviceLayer::SystemLayer().ScheduleLambda([]() { open_dnssd_pairing_window(); });
         break;
 
     case chip::DeviceLayer::DeviceEventType::kCommissioningSessionStarted:
@@ -89,29 +155,34 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 
     case chip::DeviceLayer::DeviceEventType::kCommissioningWindowOpened:
         ESP_LOGI(TAG, "Commissioning window opened");
+        if (s_instance != nullptr) {
+            s_instance->note_window_opened();
+        }
         set_state(ConnectivityState::Commissioning);
         MEMORY_PROFILER_DUMP_HEAP_STAT("commissioning window opened");
         break;
 
     case chip::DeviceLayer::DeviceEventType::kCommissioningWindowClosed:
         ESP_LOGI(TAG, "Commissioning window closed");
+        if (s_instance != nullptr) {
+            s_instance->on_window_closed();
+            s_instance->refresh_commissioned();
+        }
         break;
 
     case chip::DeviceLayer::DeviceEventType::kFabricRemoved: {
         ESP_LOGI(TAG, "Fabric removed successfully");
-        set_state(ConnectivityState::Disconnected);
+        if (s_instance != nullptr) {
+            s_instance->refresh_commissioned();
+        }
         if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
-            chip::CommissioningWindowManager &commissionMgr =
-                chip::Server::GetInstance().GetCommissioningWindowManager();
-            constexpr auto kTimeoutSeconds = chip::System::Clock::Seconds16(k_timeout_seconds);
-            if (!commissionMgr.IsCommissioningWindowOpen()) {
-                /* Wi-Fi credentials are kept, so only advertise on DNS-SD. */
-                CHIP_ERROR err = commissionMgr.OpenBasicCommissioningWindow(
-                    kTimeoutSeconds, chip::CommissioningWindowAdvertisement::kDnssdOnly);
-                if (err != CHIP_NO_ERROR) {
-                    ESP_LOGE(TAG, "Failed to open commissioning window, err:%" CHIP_ERROR_FORMAT, err.Format());
-                }
+            // Wi-Fi credentials are kept, so the new window advertises on
+            // DNS-SD only. The QR has to match that rendezvous.
+            if (!open_dnssd_pairing_window()) {
+                set_state(ConnectivityState::Disconnected);
             }
+        } else {
+            set_state(ConnectivityState::Disconnected);
         }
         break;
     }
@@ -126,6 +197,9 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 
     case chip::DeviceLayer::DeviceEventType::kFabricCommitted:
         ESP_LOGI(TAG, "Fabric is committed");
+        if (s_instance != nullptr) {
+            s_instance->refresh_commissioned();
+        }
         break;
 
     case chip::DeviceLayer::DeviceEventType::kBLEDeinitialized:
@@ -213,7 +287,99 @@ Result MatterConnectivity::start(std::uint8_t probe_count)
     esp_matter::console::init();
 #endif
 
+    chip::DeviceLayer::PlatformMgr().LockChipStack();
+    refresh_commissioned();
+    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+
+    if (!load_onboarding(false)) {
+        ESP_LOGW(TAG, "Failed to read the Matter onboarding payload");
+    }
+
     return Result::Ok;
+}
+
+void MatterConnectivity::refresh_commissioned()
+{
+    commissioned_.store(chip::Server::GetInstance().GetFabricTable().FabricCount() > 0);
+}
+
+void MatterConnectivity::note_window_opened()
+{
+    refresh_commissioned();
+    retained_fabric_.store(commissioned_.load());
+}
+
+void MatterConnectivity::on_window_closed()
+{
+    // Do not require Commissioning here. Wi-Fi stores Connected as soon as it
+    // has an address, which is the usual path through pairing, so the window
+    // often closes from Connected. A fail-safe or timeout with no fabric must
+    // still leave the LED yellow.
+    const bool has_fabric = chip::Server::GetInstance().GetFabricTable().FabricCount() > 0;
+    const bool paired = commissioning_completed_.load() || retained_fabric_.load();
+    if (has_fabric && paired) {
+        set_state(ConnectivityState::Connected);
+    } else {
+        set_state(ConnectivityState::Disconnected);
+    }
+}
+
+bool MatterConnectivity::load_on_network_onboarding()
+{
+    return load_onboarding(true);
+}
+
+bool MatterConnectivity::load_onboarding(bool on_network)
+{
+    const chip::RendezvousInformationFlags flags(on_network ? chip::RendezvousInformationFlag::kOnNetwork
+                                                            : chip::RendezvousInformationFlag::kBLE);
+
+    char qr[kOnboardingPayloadSize];
+    char manual[kManualPairingCodeSize];
+    chip::MutableCharSpan qr_span(qr, sizeof(qr));
+    CHIP_ERROR err = GetQRCode(qr_span, flags);
+    if (err != CHIP_NO_ERROR) {
+        ESP_LOGE(TAG, "GetQRCode failed: %" CHIP_ERROR_FORMAT, err.Format());
+        return false;
+    }
+
+    chip::MutableCharSpan manual_span(manual, sizeof(manual));
+    err = GetManualPairingCode(manual_span, flags);
+    if (err != CHIP_NO_ERROR) {
+        ESP_LOGE(TAG, "GetManualPairingCode failed: %" CHIP_ERROR_FORMAT, err.Format());
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(onboarding_mu_);
+        std::strncpy(qr_payload_, qr, sizeof(qr_payload_) - 1);
+        qr_payload_[sizeof(qr_payload_) - 1] = '\0';
+        std::strncpy(manual_code_, manual, sizeof(manual_code_) - 1);
+        manual_code_[sizeof(manual_code_) - 1] = '\0';
+        onboarding_ready_ = true;
+        onboarding_epoch_.fetch_add(1);
+    }
+
+    ESP_LOGI(TAG, "Onboarding payload ready (%s)", on_network ? "on-network" : "BLE");
+    return true;
+}
+
+bool MatterConnectivity::copy_onboarding(char *qr, std::size_t qr_size, char *manual, std::size_t manual_size) const
+{
+    if (qr == nullptr || manual == nullptr || qr_size == 0 || manual_size == 0) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(onboarding_mu_);
+    if (!onboarding_ready_) {
+        return false;
+    }
+
+    std::strncpy(qr, qr_payload_, qr_size - 1);
+    qr[qr_size - 1] = '\0';
+    std::strncpy(manual, manual_code_, manual_size - 1);
+    manual[manual_size - 1] = '\0';
+    return true;
 }
 
 void MatterConnectivity::publish(const DeviceSnapshot &snapshot)

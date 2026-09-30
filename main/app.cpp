@@ -118,6 +118,13 @@ Result App::init()
     last_connectivity_ = connectivity_->state();
     hmi_.update_led(last_connectivity_);
 
+    char qr[kOnboardingPayloadSize];
+    char manual[kManualPairingCodeSize];
+    if (connectivity_->copy_onboarding(qr, sizeof(qr), manual, sizeof(manual))) {
+        hmi_.set_onboarding(qr, manual);
+    }
+    last_onboarding_epoch_ = connectivity_->onboarding_epoch();
+
     return Result::Ok;
 }
 
@@ -130,6 +137,9 @@ void App::run()
     }
 
     enter_mode(AppMode::Running);
+    if (connectivity_->state() == ConnectivityState::Commissioning) {
+        enter_mode(AppMode::Commissioning);
+    }
 
     xTaskCreate(sampler_task, "sampler", kSamplerStackSize, this, kSamplerPriority, nullptr);
     xTaskCreate(ui_task, "ui", kUiStackSize, this, kUiPriority, nullptr);
@@ -159,6 +169,7 @@ void App::sampler_loop()
         const TickType_t started = xTaskGetTickCount();
 
         snapshot.connectivity = connectivity_->state();
+        snapshot.commissioned = connectivity_->is_commissioned();
         snapshot.battery_percent = 0;
         snapshot.battery_valid = hal_.read_battery(snapshot.battery_percent) == Result::Ok;
 
@@ -186,6 +197,8 @@ void App::sampler_loop()
 void App::ui_loop()
 {
     while (true) {
+        refresh_onboarding();
+
         AppEvent event;
         if (xQueueReceive(events_, &event, pdMS_TO_TICKS(kUiTickMs)) == pdTRUE) {
             handle_event(event);
@@ -213,6 +226,8 @@ void App::handle_event(const AppEvent &event)
     switch (event.type) {
     case AppEventType::SnapshotReady:
         if (xQueuePeek(snapshot_mailbox_, &snapshot_, 0) == pdTRUE) {
+            snapshot_.connectivity = connectivity_->state();
+            snapshot_.commissioned = connectivity_->is_commissioned();
             hmi_.render(snapshot_);
         }
         break;
@@ -241,7 +256,9 @@ void App::handle_event(const AppEvent &event)
         const ConnectivityState state = connectivity_->state();
         hmi_.update_led(state);
         if (state == ConnectivityState::Commissioning) {
-            if (mode_ == AppMode::Running) {
+            // Also from DisplayOff: an idle screen must wake onto the QR when
+            // the last fabric is removed.
+            if (mode_ != AppMode::Commissioning && mode_ != AppMode::FactoryReset) {
                 enter_mode(AppMode::Commissioning);
             }
         } else if (mode_ == AppMode::Commissioning) {
@@ -263,9 +280,7 @@ void App::enter_mode(AppMode mode)
     case AppMode::Running:
         hmi_.set_display_power(true);
         note_interaction();
-        if (snapshot_.sequence > 0) {
-            hmi_.render(snapshot_);
-        }
+        present();
         break;
 
     case AppMode::DisplayOff:
@@ -273,9 +288,9 @@ void App::enter_mode(AppMode mode)
         break;
 
     case AppMode::Commissioning:
-        // TODO: show the commissioning QR code here (UI-6).
         hmi_.set_display_power(true);
         note_interaction();
+        present();
         break;
 
     case AppMode::FactoryReset:
@@ -285,6 +300,32 @@ void App::enter_mode(AppMode mode)
     case AppMode::Boot:
         break;
     }
+}
+
+void App::present()
+{
+    snapshot_.commissioned = connectivity_->is_commissioned();
+    snapshot_.connectivity = connectivity_->state();
+    const bool pairing = snapshot_.connectivity == ConnectivityState::Commissioning;
+    if (pairing || snapshot_.sequence > 0 || pairing_shown_) {
+        hmi_.render(snapshot_);
+    }
+    pairing_shown_ = pairing && hmi_.display_on();
+}
+
+void App::refresh_onboarding()
+{
+    const std::uint32_t epoch = connectivity_->onboarding_epoch();
+    if (epoch == last_onboarding_epoch_) {
+        return;
+    }
+
+    char qr[kOnboardingPayloadSize];
+    char manual[kManualPairingCodeSize];
+    if (connectivity_->copy_onboarding(qr, sizeof(qr), manual, sizeof(manual))) {
+        hmi_.set_onboarding(qr, manual);
+    }
+    last_onboarding_epoch_ = epoch;
 }
 
 void App::perform_factory_reset()

@@ -2,16 +2,19 @@
 
 #include <esp_log.h>
 #include <bsp/esp-bsp.h>
-#include <device.h>
-#include <led_driver.h>
+#include <led_strip.h>
 
 #include "esp_status.h"
 
 static const char *TAG = "m5stack_hal";
 
-/** Full brightness, fully saturated: the status LED only ever shows flat colors. */
-static constexpr int kLedBrightnessPercent = 100;
-static constexpr int kLedSaturationPercent = 100;
+/** M5GO Battery Bottom3 ring: 10 WS2812s, data on bottom-bus G5 (ADR 01). */
+static constexpr int kRingGpio = 5;
+static constexpr uint32_t kRingLedCount = 10;
+
+/** ~40% so the whole ring is visible without a full-white current spike. */
+static constexpr uint8_t kRingValue = 102;
+static constexpr uint8_t kRingSaturation = 255;
 
 static int hue_for(LedColor color)
 {
@@ -28,13 +31,24 @@ static int hue_for(LedColor color)
 
 Result M5StackHal::init()
 {
-    led_driver_config_t config = led_driver_get_config();
-    led_handle_ = led_driver_init(&config);
-    if (led_handle_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to initialize LED driver");
-        return Result::Failed;
+    led_strip_config_t strip_config = {};
+    strip_config.strip_gpio_num = kRingGpio;
+    strip_config.max_leds = kRingLedCount;
+    strip_config.led_model = LED_MODEL_WS2812;
+    strip_config.color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB;
+
+    led_strip_rmt_config_t rmt_config = {};
+    rmt_config.clk_src = RMT_CLK_SRC_DEFAULT;
+    rmt_config.resolution_hz = 10 * 1000 * 1000;
+
+    led_strip_handle_t strip = nullptr;
+    const esp_err_t err = led_strip_new_rmt_device(&strip_config, &rmt_config, &strip);
+    if (err != ESP_OK || strip == nullptr) {
+        ESP_LOGE(TAG, "Failed to initialize LED ring: %s", esp_err_to_name(err));
+        return from_esp_err(err);
     }
 
+    led_handle_ = strip;
     return Result::Ok;
 }
 
@@ -56,16 +70,13 @@ Result M5StackHal::set_led(LedColor color)
         return Result::InvalidArgument;
     }
 
-    auto handle = static_cast<led_driver_handle_t>(led_handle_);
-    esp_err_t err = led_driver_set_hue(handle, hue);
-    if (err == ESP_OK) {
-        err = led_driver_set_saturation(handle, kLedSaturationPercent);
+    auto strip = static_cast<led_strip_handle_t>(led_handle_);
+    esp_err_t err = ESP_OK;
+    for (uint32_t i = 0; i < kRingLedCount && err == ESP_OK; i++) {
+        err = led_strip_set_pixel_hsv(strip, i, static_cast<uint16_t>(hue), kRingSaturation, kRingValue);
     }
     if (err == ESP_OK) {
-        err = led_driver_set_brightness(handle, kLedBrightnessPercent);
-    }
-    if (err == ESP_OK) {
-        err = led_driver_set_power(handle, true);
+        err = led_strip_refresh(strip);
     }
     return from_esp_err(err);
 }

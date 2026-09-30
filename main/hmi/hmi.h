@@ -4,6 +4,7 @@
 #include <freertos/queue.h>
 
 #include "app_event.h"
+#include "connectivity/connectivity.h"
 #include "hal/hal.h"
 #include "hmi/main_screen.h"
 #include "hmi/status_led.h"
@@ -28,6 +29,9 @@ public:
     /** Draws the main screen; a no-op while the display is off. */
     void render(const DeviceSnapshot &snapshot);
 
+    /** BLE onboarding QR payload and the manual pairing code shown beneath it. */
+    void set_onboarding(const char *qr_payload, const char *pairing_code);
+
     void update_led(ConnectivityState state) { led_.update(state); }
 
     /** Pops one pending input event. Returns false when there is none. */
@@ -39,6 +43,10 @@ private:
     void post(AppEventType type);
     /** Pushes the snapshot onto the circle widgets. False if the panel lock was busy. */
     bool draw_probes(const DeviceSnapshot &snapshot, const ScreenLine *lines, std::size_t count);
+    /** QR plus pairing code. False if the panel lock was busy. */
+    bool draw_pairing();
+    /** Writes the stored onboarding payload into the widgets. Caller holds the display lock. */
+    void apply_onboarding_locked();
 
     Hal &hal_;
     StatusLed led_;
@@ -55,7 +63,11 @@ private:
 
     static constexpr std::size_t kProbeCircleCount = 3;
 
+    void *probes_row_{nullptr};
     void *empty_label_{nullptr};
+    void *pairing_root_{nullptr};
+    void *pairing_qr_{nullptr};
+    void *pairing_code_{nullptr};
     ProbeCircle circles_[kProbeCircleCount]{};
     bool display_ready_{false};
 
@@ -63,4 +75,14 @@ private:
     ScreenLine rendered_lines_[kScreenLineCount]{};
     std::size_t rendered_count_{0};
     bool rendered_{false};
+    bool rendered_pairing_{false};
+
+    /**
+     * Last onboarding payload from connectivity. A missed display lock must not
+     * discard it: the pairing screen is drawn later, and that draw is what
+     * latches rendered_pairing_.
+     */
+    char onboarding_qr_[kOnboardingPayloadSize]{};
+    char onboarding_code_[kManualPairingCodeSize]{};
+    bool onboarding_pending_{false};
 };
