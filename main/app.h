@@ -50,6 +50,7 @@ private:
     void handle_event(const AppEvent &event);
     void enter_mode(AppMode mode);
     void present();
+    void refresh_onboarding();
     void perform_factory_reset();
     void note_interaction();
 
@@ -75,5 +76,7 @@ private:
     DeviceSnapshot snapshot_{};
     AppMode mode_{AppMode::Boot};
     ConnectivityState last_connectivity_{ConnectivityState::Disabled};
+    std::uint32_t last_onboarding_epoch_{0};
+    bool pairing_shown_{false};
     TickType_t last_interaction_{0};
 };

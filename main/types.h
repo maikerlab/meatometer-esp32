@@ -61,6 +61,6 @@ struct DeviceSnapshot {
     bool battery_valid;
     std::uint8_t battery_percent;
     ConnectivityState connectivity;
-    /** False while a Matter node still has no fabric. Drives the pairing screen. */
+    /** False while a Matter node still has no fabric. */
     bool commissioned;
 };

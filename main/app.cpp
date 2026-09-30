@@ -123,6 +123,7 @@ Result App::init()
     if (connectivity_->copy_onboarding(qr, sizeof(qr), manual, sizeof(manual))) {
         hmi_.set_onboarding(qr, manual);
     }
+    last_onboarding_epoch_ = connectivity_->onboarding_epoch();
 
     return Result::Ok;
 }
@@ -196,6 +197,8 @@ void App::sampler_loop()
 void App::ui_loop()
 {
     while (true) {
+        refresh_onboarding();
+
         AppEvent event;
         if (xQueueReceive(events_, &event, pdMS_TO_TICKS(kUiTickMs)) == pdTRUE) {
             handle_event(event);
@@ -223,6 +226,7 @@ void App::handle_event(const AppEvent &event)
     switch (event.type) {
     case AppEventType::SnapshotReady:
         if (xQueuePeek(snapshot_mailbox_, &snapshot_, 0) == pdTRUE) {
+            snapshot_.connectivity = connectivity_->state();
             snapshot_.commissioned = connectivity_->is_commissioned();
             hmi_.render(snapshot_);
         }
@@ -300,9 +304,26 @@ void App::present()
 {
     snapshot_.commissioned = connectivity_->is_commissioned();
     snapshot_.connectivity = connectivity_->state();
-    if (!snapshot_.commissioned || snapshot_.sequence > 0) {
+    const bool pairing = snapshot_.connectivity == ConnectivityState::Commissioning;
+    if (pairing || snapshot_.sequence > 0 || pairing_shown_) {
         hmi_.render(snapshot_);
     }
+    pairing_shown_ = pairing && hmi_.display_on();
+}
+
+void App::refresh_onboarding()
+{
+    const std::uint32_t epoch = connectivity_->onboarding_epoch();
+    if (epoch == last_onboarding_epoch_) {
+        return;
+    }
+
+    char qr[kOnboardingPayloadSize];
+    char manual[kManualPairingCodeSize];
+    if (connectivity_->copy_onboarding(qr, sizeof(qr), manual, sizeof(manual))) {
+        hmi_.set_onboarding(qr, manual);
+    }
+    last_onboarding_epoch_ = epoch;
 }
 
 void App::perform_factory_reset()

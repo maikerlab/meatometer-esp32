@@ -125,7 +125,11 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
                 chip::Server::GetInstance().GetCommissioningWindowManager();
             constexpr auto kTimeoutSeconds = chip::System::Clock::Seconds16(k_timeout_seconds);
             if (!commissionMgr.IsCommissioningWindowOpen()) {
-                /* Wi-Fi credentials are kept, so only advertise on DNS-SD. */
+                /* Wi-Fi credentials are kept, so only advertise on DNS-SD.
+                 * The QR has to match that rendezvous; a BLE code will not. */
+                if (s_instance != nullptr) {
+                    s_instance->load_on_network_onboarding();
+                }
                 CHIP_ERROR err = commissionMgr.OpenBasicCommissioningWindow(
                     kTimeoutSeconds, chip::CommissioningWindowAdvertisement::kDnssdOnly);
                 if (err != CHIP_NO_ERROR) {
@@ -240,7 +244,7 @@ Result MatterConnectivity::start(std::uint8_t probe_count)
     refresh_commissioned();
     chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 
-    if (!load_onboarding()) {
+    if (!load_onboarding(false)) {
         ESP_LOGW(TAG, "Failed to read the Matter onboarding payload");
     }
 
@@ -266,33 +270,54 @@ void MatterConnectivity::on_window_closed()
     }
 }
 
-bool MatterConnectivity::load_onboarding()
+bool MatterConnectivity::load_on_network_onboarding()
 {
-    const chip::RendezvousInformationFlags flags(chip::RendezvousInformationFlag::kBLE);
+    return load_onboarding(true);
+}
 
-    chip::MutableCharSpan qr(qr_payload_, sizeof(qr_payload_));
-    CHIP_ERROR err = GetQRCode(qr, flags);
+bool MatterConnectivity::load_onboarding(bool on_network)
+{
+    const chip::RendezvousInformationFlags flags(on_network ? chip::RendezvousInformationFlag::kOnNetwork
+                                                            : chip::RendezvousInformationFlag::kBLE);
+
+    char qr[kOnboardingPayloadSize];
+    char manual[kManualPairingCodeSize];
+    chip::MutableCharSpan qr_span(qr, sizeof(qr));
+    CHIP_ERROR err = GetQRCode(qr_span, flags);
     if (err != CHIP_NO_ERROR) {
         ESP_LOGE(TAG, "GetQRCode failed: %" CHIP_ERROR_FORMAT, err.Format());
         return false;
     }
 
-    chip::MutableCharSpan manual(manual_code_, sizeof(manual_code_));
-    err = GetManualPairingCode(manual, flags);
+    chip::MutableCharSpan manual_span(manual, sizeof(manual));
+    err = GetManualPairingCode(manual_span, flags);
     if (err != CHIP_NO_ERROR) {
         ESP_LOGE(TAG, "GetManualPairingCode failed: %" CHIP_ERROR_FORMAT, err.Format());
-        qr_payload_[0] = '\0';
         return false;
     }
 
-    onboarding_ready_ = true;
-    ESP_LOGI(TAG, "Onboarding payload ready");
+    {
+        std::lock_guard<std::mutex> lock(onboarding_mu_);
+        std::strncpy(qr_payload_, qr, sizeof(qr_payload_) - 1);
+        qr_payload_[sizeof(qr_payload_) - 1] = '\0';
+        std::strncpy(manual_code_, manual, sizeof(manual_code_) - 1);
+        manual_code_[sizeof(manual_code_) - 1] = '\0';
+        onboarding_ready_ = true;
+        onboarding_epoch_.fetch_add(1);
+    }
+
+    ESP_LOGI(TAG, "Onboarding payload ready (%s)", on_network ? "on-network" : "BLE");
     return true;
 }
 
 bool MatterConnectivity::copy_onboarding(char *qr, std::size_t qr_size, char *manual, std::size_t manual_size) const
 {
-    if (!onboarding_ready_ || qr == nullptr || manual == nullptr || qr_size == 0 || manual_size == 0) {
+    if (qr == nullptr || manual == nullptr || qr_size == 0 || manual_size == 0) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(onboarding_mu_);
+    if (!onboarding_ready_) {
         return false;
     }
 

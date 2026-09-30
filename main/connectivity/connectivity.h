@@ -30,8 +30,9 @@ public:
     virtual bool is_commissioned() const { return true; }
 
     /**
-     * Copies the BLE onboarding QR payload and the manual pairing code.
-     * Returns false when there is nothing to pair with.
+     * Copies the onboarding QR payload and the manual pairing code for the
+     * rendezvous method of the current window. Returns false when there is
+     * nothing to pair with.
      */
     virtual bool copy_onboarding(char *qr, std::size_t qr_size, char *manual, std::size_t manual_size) const
     {
@@ -41,6 +42,9 @@ public:
         (void)manual_size;
         return false;
     }
+
+    /** Bumps each time the onboarding payload is regenerated. */
+    virtual std::uint32_t onboarding_epoch() const { return 0; }
 
     /** Erases network and fabric credentials (UI-5). May not return. */
     virtual void factory_reset() = 0;

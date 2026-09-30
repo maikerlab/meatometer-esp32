@@ -265,7 +265,7 @@ void Hmi::render(const DeviceSnapshot &snapshot)
         return;
     }
 
-    if (!snapshot.commissioned) {
+    if (snapshot.connectivity == ConnectivityState::Commissioning) {
         if (rendered_ && rendered_pairing_) {
             return;
         }
