@@ -12,8 +12,8 @@
 /**
  * Display, status LED and user input.
  *
- * Renders to the log for now; the CoreS3 SE panel replaces output_lines()
- * with M5GFX calls without changing anything above this class.
+ * The CoreS3 SE panel is drawn with LVGL through the M5Stack CoreS3 BSP.
+ * Nothing above this class knows about the panel.
  */
 class Hmi {
 public:
@@ -37,13 +37,27 @@ private:
     static void button_short_press_cb(void *button_handle, void *usr_data);
     static void button_long_press_cb(void *button_handle, void *usr_data);
     void post(AppEventType type);
-    void output_lines(const ScreenLine *lines, std::size_t count);
+    /** Pushes the snapshot onto the circle widgets. False if the panel lock was busy. */
+    bool draw_probes(const DeviceSnapshot &snapshot, const ScreenLine *lines, std::size_t count);
 
     Hal &hal_;
     StatusLed led_;
     QueueHandle_t input_queue_{nullptr};
     void *button_handle_{nullptr};
     bool display_on_{true};
+
+    /** One circle on the main screen: name and temperature of a connected probe. */
+    struct ProbeCircle {
+        void *root;
+        void *name;
+        void *temperature;
+    };
+
+    static constexpr std::size_t kProbeCircleCount = 3;
+
+    void *empty_label_{nullptr};
+    ProbeCircle circles_[kProbeCircleCount]{};
+    bool display_ready_{false};
 
     // Last content actually drawn, so an unchanged snapshot costs nothing.
     ScreenLine rendered_lines_[kScreenLineCount]{};

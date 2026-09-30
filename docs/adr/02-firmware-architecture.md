@@ -101,7 +101,7 @@ The sampler logs a warning if a cycle exceeds its budget, so a slow probe cannot
 
 - Swapping MAX6675 for the Kmeter Unit is a new `TemperatureProbe` subclass plus one line of wiring in `App`.
 - v1 runs with `NullConnectivity` and no network at all; `MatterConnectivity` is selected by `CONFIG_MEATOMETER_ENABLE_MATTER` and creates one `TemperatureMeasurement` endpoint per probe (CN-3), clamped at 327.67 °C when reporting (CN-9).
-- The display is not wrapped in the HAL. `Hmi` renders into text lines today and will call M5GFX/LVGL directly once CoreS3 hardware is in hand; HAL only owns backlight power.
+- The display is not wrapped in the HAL. `Hmi` draws the main screen with LVGL through the M5Stack CoreS3 BSP (`espressif/m5stack_core_s3`); HAL only owns backlight power (`bsp_display_backlight_on` / `off`).
 - Two tasks and two queues cost roughly 8 KB of stack and ~300 bytes of queue memory — acceptable on an ESP32-S3 with PSRAM.
 - Adding a probe past 6 (NF-4) still needs the staggered-polling redesign called out in ADR 01; the two-phase interface is what makes that a `ProbeManager` change and nothing else.
 
