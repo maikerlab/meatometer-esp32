@@ -31,7 +31,12 @@ static constexpr int kCircleDiameterPx = 96;
 static constexpr int kCircleBorderPx = 3;
 static constexpr int kCircleGapPx = 8;
 
-/** Give up the redraw rather than stalling the UI task on the LVGL mutex. */
+/**
+ * Give up a later redraw rather than stalling the UI task on the LVGL mutex.
+ * Init waits forever: bsp_display_start() already runs the LVGL task, which holds
+ * this same lock through the first 320x240 flush, often longer than 50 ms.
+ * A timeout of 0 blocks indefinitely, matching the BSP examples.
+ */
 static constexpr std::uint32_t kDisplayLockTimeoutMs = 50;
 
 static lv_obj_t *make_circle(lv_obj_t *parent, lv_obj_t **name_label, lv_obj_t **temperature_label)
@@ -106,7 +111,7 @@ Result Hmi::init()
         return Result::Failed;
     }
 
-    if (!bsp_display_lock(kDisplayLockTimeoutMs)) {
+    if (!bsp_display_lock(0)) {
         ESP_LOGE(TAG, "Failed to lock display during init");
         return Result::Failed;
     }
