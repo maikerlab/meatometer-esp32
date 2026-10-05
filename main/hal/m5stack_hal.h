@@ -5,9 +5,10 @@
 /**
  * CoreS3 SE + M5GO Battery Bottom3 + Unit PaHub (see ADR 01).
  *
- * Display backlight goes through the CoreS3 BSP (AXP2101). The PaHub and
- * battery gauge are stubbed until that hardware is wired. The status LED is
- * the M5GO Battery Bottom3 WS2812 ring on GPIO 5 (ADR 01).
+ * Display backlight goes through the CoreS3 BSP (AXP2101). Init enables
+ * Grove/M-Bus 5 V via AW9523B BOOST_EN + BUS_OUT_EN (needed on battery).
+ * The PaHub and battery gauge are stubbed until that hardware is wired.
+ * The status LED is the M5GO Battery Bottom3 WS2812 ring on GPIO 5 (ADR 01).
  */
 class M5StackHal : public Hal {
 public:

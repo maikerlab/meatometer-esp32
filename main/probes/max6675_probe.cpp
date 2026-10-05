@@ -37,6 +37,9 @@ Result Max6675Probe::init()
         .TEMPERATURE_CALIBRATION_COEFFICIENT = config_.calibration_coefficient,
     };
     MAX6675_init(cfg);
+    // Idle CS high so the part can finish a conversion between reads.
+    gpio_set_level(static_cast<gpio_num_t>(config_.cs_gpio), 1);
+    gpio_set_level(static_cast<gpio_num_t>(config_.sck_gpio), 0);
 
     s_initialized = true;
     ready_ = true;

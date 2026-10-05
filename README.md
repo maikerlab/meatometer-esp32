@@ -9,8 +9,29 @@ Grove/HY2.0-4P wire order is always **black / red / yellow / white** = GND / 5 V
 **Port A** is the **red** HY2.0 on the **CoreS3 SE** (USB-C side).
 Bottom3 brings out **Port B** and **Port C**.
 Do not feed MAX6675 **VCC** from Grove 5 V; use the AMS1117 **3.3 V** output.
+Firmware turns Grove/M-Bus 5 V on at boot (`BOOST_EN` + `BUS_OUT_EN`).
 
-The Bottom3 **WS2812** ring is wired on the M5-Bus (`G5`); it is not a Grove pin.
+The Bottom3 **WS2812** ring is wired on the M5-Bus (`G5`).
+
+```mermaid
+flowchart LR
+  subgraph m5["M5Stack CoreS3 SE + Bottom3"]
+    PA["Port A<br/>Core, red"]
+    PB["Port B<br/>Bottom3"]
+    PC["Port C<br/>Bottom3"]
+  end
+
+  AMS["AMS1117-3.3"]
+  MAX["MAX6675"]
+
+  PA -->|"GND"| MAX
+  PA -->|"G2 CS"| MAX
+  PC -->|"G17 SCK"| MAX
+  PC -->|"G18 SO"| MAX
+  PC -->|"GND"| AMS
+  PC -->|"5 V → VIN"| AMS
+  AMS -->|"VOUT 3.3 V → VCC"| MAX
+```
 
 | Connector          | Signal      | GPIO | NTC 1        | NTC 2        | MAX6675   | AMS1117 | WS2812    |
 | ------------------ | ----------- | ---- | ------------ | ------------ | --------- | ------- | --------- |

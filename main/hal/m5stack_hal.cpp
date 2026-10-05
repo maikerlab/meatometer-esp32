@@ -2,6 +2,8 @@
 
 #include <esp_log.h>
 #include <bsp/esp-bsp.h>
+#include <bsp/m5stack_core_s3.h>
+#include <esp_io_expander.h>
 #include <led_strip.h>
 
 #include "esp_status.h"
@@ -29,8 +31,55 @@ static int hue_for(LedColor color)
     return -1;
 }
 
+/**
+ * CoreS3 / CoreS3 SE: Grove and M-Bus 5 V are off until the AW9523B enables
+ * the SY7088 boost and the bus-output switch (M5Unified setExtOutput(true)).
+ * On battery that is the only 5 V source for Ports A/B/C.
+ *
+ * AW9523 P0_1 = BUS_OUT_EN, P0_5 = USB_OTG_EN, P1_7 = BOOST_EN.
+ */
+static Result enable_grove_bus_power()
+{
+    constexpr uint32_t kBusOutEn = IO_EXPANDER_PIN_NUM_1;
+    constexpr uint32_t kUsbOtgEn = BSP_USB_EN;
+    constexpr uint32_t kBoostEn = IO_EXPANDER_PIN_NUM_15;
+
+    if (bsp_i2c_init() != ESP_OK) {
+        ESP_LOGE(TAG, "Internal I2C init failed");
+        return Result::Failed;
+    }
+
+    esp_io_expander_handle_t io = bsp_io_expander_init();
+    if (io == nullptr) {
+        ESP_LOGE(TAG, "AW9523B init failed");
+        return Result::Failed;
+    }
+
+    esp_err_t err = esp_io_expander_set_dir(io, kBusOutEn | kUsbOtgEn | kBoostEn, IO_EXPANDER_OUTPUT);
+    if (err == ESP_OK) {
+        err = esp_io_expander_set_level(io, kBoostEn, 1);
+    }
+    if (err == ESP_OK) {
+        err = esp_io_expander_set_level(io, kBusOutEn, 1);
+    }
+    if (err == ESP_OK) {
+        err = esp_io_expander_set_level(io, kUsbOtgEn, 0);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enable Grove 5V: %s", esp_err_to_name(err));
+        return from_esp_err(err);
+    }
+
+    ESP_LOGI(TAG, "Grove/M-Bus 5V enabled (BOOST_EN + BUS_OUT_EN)");
+    return Result::Ok;
+}
+
 Result M5StackHal::init()
 {
+    if (enable_grove_bus_power() != Result::Ok) {
+        return Result::Failed;
+    }
+
     led_strip_config_t strip_config = {};
     strip_config.strip_gpio_num = kRingGpio;
     strip_config.max_leds = kRingLedCount;

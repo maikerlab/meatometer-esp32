@@ -33,17 +33,14 @@ static constexpr UBaseType_t kSamplerPriority = 3;
 static constexpr UBaseType_t kUiPriority = 2;
 
 /**
- * Placeholder until the Kmeter Unit is on the I2C bus (ADR 01).
- * GPIO0 is I2S MCLK on the CoreS3 SE, and GPIO1/2 are not a wired MAX6675,
- * so this probe is not started. Driving GPIO0 low also looked like the
- * devkit button being held.
+ * Type-K chamber probe on the MAX6675 (README pin mapping).
+ * CS = Port A yellow (G2), SCK = Port C yellow (G17), SO = Port C white (G18).
+ * 0.25 °C/LSB is the MAX6675 datasheet scale.
  */
-static constexpr bool kChamberProbeEnabled = false;
-
 static constexpr Max6675Probe::Config kChamberProbeConfig = {
-    .sck_gpio = 0,
-    .cs_gpio = 1,
-    .miso_gpio = 2,
+    .sck_gpio = 17,
+    .cs_gpio = 2,
+    .miso_gpio = 18,
     .calibration_coefficient = 0.25f,
 };
 
@@ -88,9 +85,7 @@ Result App::init()
     }
     hmi_.update_led(connectivity_->state());
 
-    if (kChamberProbeEnabled) {
-        probes_.add(&chamber_probe_);
-    }
+    probes_.add(&chamber_probe_);
     probes_.add(&food_probe_1_);
     probes_.add(&food_probe_2_);
     if (probes_.init() != Result::Ok) {
