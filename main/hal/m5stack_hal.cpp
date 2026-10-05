@@ -27,6 +27,8 @@ static int hue_for(LedColor color)
         return 120;
     case LedColor::Blue:
         return 240;
+    case LedColor::Off:
+        return -1;
     }
     return -1;
 }
@@ -114,12 +116,16 @@ Result M5StackHal::set_led(LedColor color)
         return Result::NotReady;
     }
 
+    auto strip = static_cast<led_strip_handle_t>(led_handle_);
+    if (color == LedColor::Off) {
+        return from_esp_err(led_strip_clear(strip));
+    }
+
     const int hue = hue_for(color);
     if (hue < 0) {
         return Result::InvalidArgument;
     }
 
-    auto strip = static_cast<led_strip_handle_t>(led_handle_);
     esp_err_t err = ESP_OK;
     for (uint32_t i = 0; i < kRingLedCount && err == ESP_OK; i++) {
         err = led_strip_set_pixel_hsv(strip, i, static_cast<uint16_t>(hue), kRingSaturation, kRingValue);

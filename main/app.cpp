@@ -213,6 +213,9 @@ void App::ui_loop()
             pdTICKS_TO_MS(xTaskGetTickCount() - last_interaction_) >= kIdleTimeoutMs) {
             handle_event({AppEventType::IdleTimeout});
         }
+
+        hmi_.set_identify(connectivity_->identify_active());
+        hmi_.tick_led();
     }
 }
 

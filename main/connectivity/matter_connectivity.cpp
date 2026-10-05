@@ -1,6 +1,10 @@
 #include "connectivity/matter_connectivity.h"
 
+#include <cstdint>
 #include <cstring>
+
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include <esp_log.h>
 
@@ -212,11 +216,78 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
     }
 }
 
+/** TriggerEffect has no STOP, so Blink/Breathe/Okay/ChannelChange flash this long. */
+static constexpr std::uint32_t kEffectFlashMs = 15000;
+
+static constexpr std::uint8_t kFinishEffect = 0xFE;
+static constexpr std::uint8_t kStopEffect = 0xFF;
+
 static esp_err_t app_identification_cb(identification::callback_type_t type, uint16_t endpoint_id, uint8_t effect_id,
                                        uint8_t effect_variant, void *priv_data)
 {
-    ESP_LOGI(TAG, "Identification callback: type: %u, effect: %u, variant: %u", type, effect_id, effect_variant);
+    ESP_LOGI(TAG, "Identification callback: type: %u, endpoint: %u, effect: %u, variant: %u", type, endpoint_id,
+             effect_id, effect_variant);
+    if (s_instance == nullptr) {
+        return ESP_OK;
+    }
+
+    switch (type) {
+    case identification::START:
+        s_instance->note_identify_start();
+        break;
+    case identification::STOP:
+        s_instance->note_identify_stop();
+        break;
+    case identification::EFFECT:
+        s_instance->note_identify_effect(effect_id);
+        break;
+    }
+    (void)priv_data;
     return ESP_OK;
+}
+
+bool MatterConnectivity::identify_active() const
+{
+    if (identify_count_.load() > 0) {
+        return true;
+    }
+    if (!effect_armed_.load()) {
+        return false;
+    }
+
+    const auto now = static_cast<std::uint32_t>(xTaskGetTickCount());
+    return static_cast<std::int32_t>(now - effect_deadline_.load()) < 0;
+}
+
+void MatterConnectivity::note_identify_start()
+{
+    std::uint8_t current = identify_count_.load();
+    do {
+        if (current == UINT8_MAX) {
+            return;
+        }
+    } while (!identify_count_.compare_exchange_weak(current, static_cast<std::uint8_t>(current + 1)));
+}
+
+void MatterConnectivity::note_identify_stop()
+{
+    effect_armed_.store(false);
+    std::uint8_t current = identify_count_.load();
+    do {
+        if (current == 0) {
+            return;
+        }
+    } while (!identify_count_.compare_exchange_weak(current, static_cast<std::uint8_t>(current - 1)));
+}
+
+void MatterConnectivity::note_identify_effect(std::uint8_t effect_id)
+{
+    if (effect_id == kFinishEffect || effect_id == kStopEffect) {
+        return;
+    }
+
+    effect_deadline_.store(static_cast<std::uint32_t>(xTaskGetTickCount()) + pdMS_TO_TICKS(kEffectFlashMs));
+    effect_armed_.store(true);
 }
 
 static esp_err_t app_attribute_update_cb(attribute::callback_type_t type, uint16_t endpoint_id, uint32_t cluster_id,

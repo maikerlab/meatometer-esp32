@@ -16,6 +16,12 @@ public:
     Result start(std::uint8_t probe_count) override;
     void publish(const DeviceSnapshot &snapshot) override;
     ConnectivityState state() const override { return state_.load(); }
+    bool identify_active() const override;
+
+    /** Called from the CHIP identify callback. */
+    void note_identify_start();
+    void note_identify_stop();
+    void note_identify_effect(std::uint8_t effect_id);
     bool is_commissioned() const override { return commissioned_.load(); }
     bool copy_onboarding(char *qr, std::size_t qr_size, char *manual, std::size_t manual_size) const override;
     std::uint32_t onboarding_epoch() const override { return onboarding_epoch_.load(); }
@@ -47,6 +53,11 @@ private:
     /** Fabric already present when the current commissioning window opened. */
     std::atomic<bool> retained_fabric_{false};
     std::atomic<std::uint32_t> onboarding_epoch_{0};
+    /** Endpoints whose Identify command is still counting down. */
+    std::atomic<std::uint8_t> identify_count_{0};
+    /** TriggerEffect flash, in FreeRTOS ticks. Ignored unless effect_armed_. */
+    std::atomic<std::uint32_t> effect_deadline_{0};
+    std::atomic<bool> effect_armed_{false};
     std::uint16_t endpoint_ids_[kMaxProbes]{};
     std::uint8_t endpoint_count_{0};
     mutable std::mutex onboarding_mu_;

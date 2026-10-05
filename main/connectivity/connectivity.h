@@ -23,6 +23,12 @@ public:
     virtual ConnectivityState state() const = 0;
 
     /**
+     * True while any Identify cluster is running Identify or TriggerEffect.
+     * Null connectivity never identifies, so the status LED stays steady.
+     */
+    virtual bool identify_active() const { return false; }
+
+    /**
      * False only for a Matter node that has no fabric yet. Null connectivity
      * is not a Matter device, so it reports commissioned and the probe screen
      * stays up.

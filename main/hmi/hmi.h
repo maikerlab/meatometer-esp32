@@ -34,6 +34,10 @@ public:
 
     void update_led(ConnectivityState state) { led_.update(state); }
 
+    /** Matter Identify flash. The UI task calls both; the LED is not touched elsewhere. */
+    void set_identify(bool active) { led_.set_identify(active); }
+    void tick_led() { led_.tick(); }
+
     /** Pops one pending input event. Returns false when there is none. */
     bool poll_input(AppEvent &out);
 

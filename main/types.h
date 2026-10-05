@@ -21,11 +21,12 @@ enum class Result {
     NotReady,
 };
 
-/** Status LED colors in UI-4 priority order. */
+/** Status LED colors in UI-4 priority order. Off is the dark half of an identify flash. */
 enum class LedColor {
     Yellow,
     Green,
     Blue,
+    Off,
 };
 
 enum class ProbeKind {
