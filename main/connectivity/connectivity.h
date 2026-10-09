@@ -52,6 +52,21 @@ public:
     /** Bumps each time the onboarding payload is regenerated. */
     virtual std::uint32_t onboarding_epoch() const { return 0; }
 
+    /**
+     * Opens the Matter commissioning window (UI-6). Null connectivity ignores
+     * it. Must return immediately; the stack work is scheduled, not run here.
+     */
+    virtual void request_pairing() {}
+
+    /** Closes a window opened by request_pairing(). Same threading rule. */
+    virtual void cancel_pairing() {}
+
+    /**
+     * True from request_pairing() until the window is open, or until the
+     * attempt fails. False when no pairing was asked for.
+     */
+    virtual bool pairing_active() const { return false; }
+
     /** Erases network and fabric credentials (UI-5). May not return. */
     virtual void factory_reset() = 0;
 };

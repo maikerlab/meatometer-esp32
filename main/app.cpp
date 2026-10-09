@@ -44,7 +44,7 @@ static constexpr Max6675Probe::Config kChamberProbeConfig = {
     .calibration_coefficient = 0.25f,
 };
 
-/** Placeholder food probes until the ADS1115 + NTC path is wired (PR-1). */
+/** Simulated probes until the ADS1115 + NTC food probes are wired (PR-1). */
 static constexpr SimulatedProbe::Config kFoodProbeConfig = {
     .min_celsius = 20.0f,
     .max_celsius = 95.0f,
@@ -58,8 +58,8 @@ App::App()
 #else
       connectivity_(&null_connectivity_),
 #endif
-      chamber_probe_(0, kChamberProbeConfig), food_probe_1_(1, ProbeKind::Food, kFoodProbeConfig),
-      food_probe_2_(2, ProbeKind::Food, kFoodProbeConfig)
+      chamber_probe_(0, kChamberProbeConfig), food_probe_1_(1, ProbeKind::Simulated, kFoodProbeConfig),
+      food_probe_2_(2, ProbeKind::Simulated, kFoodProbeConfig)
 {
 }
 
@@ -132,9 +132,6 @@ void App::run()
     }
 
     enter_mode(AppMode::Running);
-    if (connectivity_->state() == ConnectivityState::Commissioning) {
-        enter_mode(AppMode::Commissioning);
-    }
 
     xTaskCreate(sampler_task, "sampler", kSamplerStackSize, this, kSamplerPriority, nullptr);
     xTaskCreate(ui_task, "ui", kUiStackSize, this, kUiPriority, nullptr);
@@ -209,9 +206,16 @@ void App::ui_loop()
             handle_event({AppEventType::ConnectivityChanged});
         }
 
-        if (mode_ == AppMode::Running &&
+        if ((mode_ == AppMode::Running || mode_ == AppMode::Commissioning) && hmi_.display_on() &&
             pdTICKS_TO_MS(xTaskGetTickCount() - last_interaction_) >= kIdleTimeoutMs) {
             handle_event({AppEventType::IdleTimeout});
+        }
+
+        // The window open is asynchronous. Leave the QR if it never opened or
+        // has since closed (UI-6).
+        if (mode_ == AppMode::Commissioning && !connectivity_->pairing_active() &&
+            connectivity_->state() != ConnectivityState::Commissioning) {
+            enter_mode(AppMode::Running);
         }
 
         hmi_.set_identify(connectivity_->identify_active());
@@ -226,14 +230,17 @@ void App::handle_event(const AppEvent &event)
         if (xQueuePeek(snapshot_mailbox_, &snapshot_, 0) == pdTRUE) {
             snapshot_.connectivity = connectivity_->state();
             snapshot_.commissioned = connectivity_->is_commissioned();
-            hmi_.render(snapshot_);
+            hmi_.render(snapshot_, mode_ == AppMode::Commissioning);
         }
         break;
 
     case AppEventType::ButtonShort:
-        // UI-3: short press toggles the display.
+        // UI-3: short press toggles the backlight and leaves the view alone.
         note_interaction();
-        enter_mode(hmi_.display_on() ? AppMode::DisplayOff : AppMode::Running);
+        hmi_.set_display_power(!hmi_.display_on());
+        if (hmi_.display_on()) {
+            present();
+        }
         break;
 
     case AppEventType::ButtonLongReset:
@@ -241,26 +248,45 @@ void App::handle_event(const AppEvent &event)
         break;
 
     case AppEventType::Touch:
-        // UI-9: a touch wakes the display.
+        if (!hmi_.display_on()) {
+            // UI-9: a touch while the backlight is off only wakes it.
+            hmi_.set_display_power(true);
+            note_interaction();
+            present();
+            break;
+        }
         note_interaction();
-        enter_mode(AppMode::Running);
+        if (mode_ == AppMode::Commissioning) {
+            // UI-6: a touch on the QR screen stops commissioning.
+            connectivity_->cancel_pairing();
+            enter_mode(AppMode::Running);
+        }
+        break;
+
+    case AppEventType::PairRequested:
+        if (!hmi_.display_on() || connectivity_->is_commissioned() ||
+            connectivity_->state() == ConnectivityState::Disabled) {
+            break;
+        }
+        note_interaction();
+        connectivity_->request_pairing();
+        enter_mode(AppMode::Commissioning);
         break;
 
     case AppEventType::IdleTimeout:
-        enter_mode(AppMode::DisplayOff);
+        hmi_.set_display_power(false);
         break;
 
     case AppEventType::ConnectivityChanged: {
         const ConnectivityState state = connectivity_->state();
         hmi_.update_led(state);
-        if (state == ConnectivityState::Commissioning) {
-            // Also from DisplayOff: an idle screen must wake onto the QR when
-            // the last fabric is removed.
-            if (mode_ != AppMode::Commissioning && mode_ != AppMode::FactoryReset) {
-                enter_mode(AppMode::Commissioning);
-            }
-        } else if (mode_ == AppMode::Commissioning) {
+        // Do not open the QR from a window the stack opened on its own (UI-6).
+        // Do leave the QR once that window is gone.
+        if (mode_ == AppMode::Commissioning && state != ConnectivityState::Commissioning &&
+            !connectivity_->pairing_active()) {
             enter_mode(AppMode::Running);
+        } else if (mode_ != AppMode::FactoryReset && hmi_.display_on()) {
+            present();
         }
         break;
     }
@@ -272,17 +298,17 @@ void App::enter_mode(AppMode mode)
     if (mode_ == mode) {
         return;
     }
+    const AppMode previous = mode_;
     mode_ = mode;
 
     switch (mode) {
     case AppMode::Running:
-        hmi_.set_display_power(true);
-        note_interaction();
-        present();
-        break;
-
-    case AppMode::DisplayOff:
-        hmi_.set_display_power(false);
+        // Waking from a closed window must not turn a sleeping panel back on.
+        if (previous == AppMode::Boot || hmi_.display_on()) {
+            hmi_.set_display_power(true);
+            note_interaction();
+            present();
+        }
         break;
 
     case AppMode::Commissioning:
@@ -304,9 +330,9 @@ void App::present()
 {
     snapshot_.commissioned = connectivity_->is_commissioned();
     snapshot_.connectivity = connectivity_->state();
-    const bool pairing = snapshot_.connectivity == ConnectivityState::Commissioning;
+    const bool pairing = mode_ == AppMode::Commissioning;
     if (pairing || snapshot_.sequence > 0 || pairing_shown_) {
-        hmi_.render(snapshot_);
+        hmi_.render(snapshot_, pairing);
     }
     pairing_shown_ = pairing && hmi_.display_on();
 }

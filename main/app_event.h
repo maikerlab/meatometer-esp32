@@ -6,6 +6,8 @@ enum class AppEventType {
     ButtonShort,
     ButtonLongReset,
     Touch,
+    /** Status-bar Pair control (UI-6). Ignored while the backlight is off. */
+    PairRequested,
     IdleTimeout,
     ConnectivityChanged,
 };

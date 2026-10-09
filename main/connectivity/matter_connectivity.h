@@ -23,6 +23,9 @@ public:
     void note_identify_stop();
     void note_identify_effect(std::uint8_t effect_id);
     bool is_commissioned() const override { return commissioned_.load(); }
+    void request_pairing() override;
+    void cancel_pairing() override;
+    bool pairing_active() const override { return pairing_requested_.load(); }
     bool copy_onboarding(char *qr, std::size_t qr_size, char *manual, std::size_t manual_size) const override;
     std::uint32_t onboarding_epoch() const override { return onboarding_epoch_.load(); }
     void factory_reset() override;
@@ -43,13 +46,25 @@ public:
      * Wi-Fi having an address is not enough: that happens before pairing finishes.
      */
     void on_window_closed();
+    /** CHIP event loop. Closes a window the user did not ask for (UI-6). */
+    void close_unsolicited_window();
 
 private:
+    /** CHIP event loop. Opens the window for the current rendezvous. */
+    void open_pairing_window();
     bool load_onboarding(bool on_network);
 
     std::atomic<ConnectivityState> state_{ConnectivityState::Disconnected};
     std::atomic<bool> commissioned_{false};
     std::atomic<bool> commissioning_completed_{false};
+    /** User pressed Pair. An unsolicited window is closed while this is false. */
+    std::atomic<bool> pairing_requested_{false};
+    /** Bumped on every Pair press so a close started earlier is ignored. */
+    std::atomic<std::uint32_t> pairing_generation_{0};
+    /** Generation captured when this object called CloseCommissioningWindow. */
+    std::atomic<std::uint32_t> close_epoch_{0};
+    /** True after this object asks the stack to close, until that close is delivered. */
+    std::atomic<bool> close_pending_{false};
     /** Fabric already present when the current commissioning window opened. */
     std::atomic<bool> retained_fabric_{false};
     std::atomic<std::uint32_t> onboarding_epoch_{0};

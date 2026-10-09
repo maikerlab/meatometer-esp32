@@ -23,7 +23,7 @@
 enum class AppMode {
     Boot,
     Running,
-    DisplayOff,
+    /** Pair screen. The backlight can be off without leaving this mode (UI-9). */
     Commissioning,
     FactoryReset,
 };

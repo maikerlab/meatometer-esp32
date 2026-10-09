@@ -7,14 +7,35 @@
 #include <nvs.h>
 #include <nvs_flash.h>
 
+#include <sdkconfig.h>
+
 #include "esp_status.h"
 
 static const char *TAG = "settings";
 
 static const char *kNamespace = "meatometer";
 
-/** Default probe names (PR-7). Ports beyond the first three get "Probe N". */
-static const char *kDefaultNames[] = {"Environment", "Meat 1", "Meat 2"};
+/**
+ * Factory defaults (PR-7), one menuconfig string per registration slot in App.
+ * Probe 0 is the environment probe, 1–2 are simulated, 3–4 are food probes.
+ */
+static const char *configured_default(ProbeId id)
+{
+    switch (id) {
+    case 0:
+        return CONFIG_MEATOMETER_NAME_ENVIRONMENT;
+    case 1:
+        return CONFIG_MEATOMETER_NAME_DUMMY_1;
+    case 2:
+        return CONFIG_MEATOMETER_NAME_DUMMY_2;
+    case 3:
+        return CONFIG_MEATOMETER_NAME_FOOD_1;
+    case 4:
+        return CONFIG_MEATOMETER_NAME_FOOD_2;
+    default:
+        return nullptr;
+    }
+}
 
 static void name_key(ProbeId id, char *out, std::size_t size)
 {
@@ -23,11 +44,12 @@ static void name_key(ProbeId id, char *out, std::size_t size)
 
 void SettingsStore::default_name(ProbeId id, char *out, std::size_t size)
 {
-    if (id < sizeof(kDefaultNames) / sizeof(kDefaultNames[0])) {
-        snprintf(out, size, "%s", kDefaultNames[id]);
-    } else {
-        snprintf(out, size, "Probe %u", static_cast<unsigned>(id) + 1);
+    const char *configured = configured_default(id);
+    if (configured != nullptr && configured[0] != '\0') {
+        snprintf(out, size, "%s", configured);
+        return;
     }
+    snprintf(out, size, "Probe %u", static_cast<unsigned>(id) + 1);
 }
 
 void SettingsStore::load_defaults()
