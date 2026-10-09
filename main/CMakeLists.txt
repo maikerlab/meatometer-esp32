@@ -6,3 +6,5 @@ if (CONFIG_ENABLE_SET_CERT_DECLARATION_API)
 endif()
 
 target_compile_options(${COMPONENT_LIB} PRIVATE "-DCHIP_HAVE_CONFIG_H")
+# See __wrap_esp_lcd_new_panel_io_spi in hmi.cpp.
+target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_lcd_new_panel_io_spi")

@@ -80,8 +80,8 @@ App/UI task (prio 2, 50 ms tick)    CHIP event loop
 - The **app/UI task** reads the newest snapshot from a length-1 `xQueueOverwrite` mailbox. A slow redraw drops stale frames instead of backing up the sampler.
 - **Matter gets no task of ours.** Publishing goes through `chip::DeviceLayer::SystemLayer().ScheduleLambda(...)`, which returns immediately and runs the attribute write on the CHIP event loop, where it has to happen anyway.
 
-Mode state machine in `App`: `Boot`, `Running`, `DisplayOff`, `Commissioning` (v2), `FactoryReset`.
-Events: `SnapshotReady`, `ButtonShort`, `ButtonLongReset`, `Touch`, `IdleTimeout`, `ConnectivityChanged`.
+Mode state machine in `App`: `Boot`, `Running`, `Commissioning` (v2), `FactoryReset`. Backlight on/off is separate from the mode, so a timed-out or button-toggled screen can wake back onto the same view (UI-3, UI-9). `Commissioning` is entered only from the Pair button (UI-6).
+Events: `SnapshotReady`, `ButtonShort`, `ButtonLongReset`, `Touch`, `PairRequested`, `IdleTimeout`, `ConnectivityChanged`.
 An enum plus one `handle()` switch — enough to make UI-3, UI-4, UI-5 and UI-9 explicit instead of scattering booleans.
 
 ### 4. Rules for avoiding long blocking calls
@@ -124,6 +124,5 @@ main/
 
 ## Open follow-ups
 
-- `Hal::i2c_select()` and `read_battery()` are stubs until CoreS3 SE + PaHub + AXP2101 are wired.
-- Touch input is stubbed in `Hmi::poll_input()`; UI-9's idle timeout is implemented but only the button can currently wake the display.
+- `Hal::i2c_select()` and `read_battery()` are stubs until CoreS3 SE + PaHub + AXP2101 are wired. The status bar still shows `--%` until battery reads succeed (UI-2).
 - Probe names are readable/writable locally but not yet over Matter (CN-8).

@@ -8,6 +8,40 @@ menu "Meatometer Configuration"
             Wi-Fi. Disable for the v1 standalone prototype, which measures and
             displays locally with no network stack at all.
 
+    config MEATOMETER_NAME_ENVIRONMENT
+        string "Default name for the environment probe"
+        default "Deckel"
+        help
+            Factory default for probe 0, the chamber / environment probe
+            (PR-7). A name already stored on the device overrides this until
+            factory reset.
+
+    config MEATOMETER_NAME_DUMMY_1
+        string "Default name for dummy probe 1"
+        default "Dummy 1"
+        help
+            Factory default for probe 1. The firmware registers the first
+            simulated probe in this slot.
+
+    config MEATOMETER_NAME_DUMMY_2
+        string "Default name for dummy probe 2"
+        default "Dummy 2"
+        help
+            Factory default for probe 2, the second simulated probe.
+
+    config MEATOMETER_NAME_FOOD_1
+        string "Default name for food probe 1"
+        default "Fleisch 1"
+        help
+            Factory default for probe 3, the first real food probe, once that
+            port is registered.
+
+    config MEATOMETER_NAME_FOOD_2
+        string "Default name for food probe 2"
+        default "Fleisch 2"
+        help
+            Factory default for probe 4, the second real food probe.
+
     config ENABLE_MEMORY_PROFILING
         bool "Enable Memory Profiling"
         default n
