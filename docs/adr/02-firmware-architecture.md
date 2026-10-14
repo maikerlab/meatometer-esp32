@@ -80,7 +80,7 @@ App/UI task (prio 2, 50 ms tick)    CHIP event loop
 - The **app/UI task** reads the newest snapshot from a length-1 `xQueueOverwrite` mailbox. A slow redraw drops stale frames instead of backing up the sampler.
 - **Matter gets no task of ours.** Publishing goes through `chip::DeviceLayer::SystemLayer().ScheduleLambda(...)`, which returns immediately and runs the attribute write on the CHIP event loop, where it has to happen anyway.
 
-Mode state machine in `App`: `Boot`, `Running`, `Commissioning` (v2), `FactoryReset`. Backlight on/off is separate from the mode, so a timed-out or button-toggled screen can wake back onto the same view (UI-3, UI-9). `Commissioning` is entered only from the Pair button (UI-6).
+Mode state machine in `App`: `Boot`, `Running`, `Commissioning` (v2), `FactoryReset`. Backlight on/off is separate from the mode, so a timed-out or button-toggled screen can wake back onto the same view (UI-3, UI-9). `Commissioning` is the QR screen and is entered only from the Pair button. It does not open or close the Matter commissioning window (UI-6).
 Events: `SnapshotReady`, `ButtonShort`, `ButtonLongReset`, `Touch`, `PairRequested`, `IdleTimeout`, `ConnectivityChanged`.
 An enum plus one `handle()` switch — enough to make UI-3, UI-4, UI-5 and UI-9 explicit instead of scattering booleans.
 

@@ -211,13 +211,6 @@ void App::ui_loop()
             handle_event({AppEventType::IdleTimeout});
         }
 
-        // The window open is asynchronous. Leave the QR if it never opened or
-        // has since closed (UI-6).
-        if (mode_ == AppMode::Commissioning && !connectivity_->pairing_active() &&
-            connectivity_->state() != ConnectivityState::Commissioning) {
-            enter_mode(AppMode::Running);
-        }
-
         hmi_.set_identify(connectivity_->identify_active());
         hmi_.tick_led();
     }
@@ -257,8 +250,7 @@ void App::handle_event(const AppEvent &event)
         }
         note_interaction();
         if (mode_ == AppMode::Commissioning) {
-            // UI-6: a touch on the QR screen stops commissioning.
-            connectivity_->cancel_pairing();
+            // UI-6: the touch only leaves the QR. It does not stop pairing.
             enter_mode(AppMode::Running);
         }
         break;
@@ -269,7 +261,6 @@ void App::handle_event(const AppEvent &event)
             break;
         }
         note_interaction();
-        connectivity_->request_pairing();
         enter_mode(AppMode::Commissioning);
         break;
 
@@ -280,12 +271,7 @@ void App::handle_event(const AppEvent &event)
     case AppEventType::ConnectivityChanged: {
         const ConnectivityState state = connectivity_->state();
         hmi_.update_led(state);
-        // Do not open the QR from a window the stack opened on its own (UI-6).
-        // Do leave the QR once that window is gone.
-        if (mode_ == AppMode::Commissioning && state != ConnectivityState::Commissioning &&
-            !connectivity_->pairing_active()) {
-            enter_mode(AppMode::Running);
-        } else if (mode_ != AppMode::FactoryReset && hmi_.display_on()) {
+        if (mode_ != AppMode::FactoryReset && hmi_.display_on()) {
             present();
         }
         break;

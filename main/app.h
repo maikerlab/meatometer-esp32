@@ -23,7 +23,7 @@
 enum class AppMode {
     Boot,
     Running,
-    /** Pair screen. The backlight can be off without leaving this mode (UI-9). */
+    /** QR screen. Does not open or close the Matter window (UI-6). */
     Commissioning,
     FactoryReset,
 };

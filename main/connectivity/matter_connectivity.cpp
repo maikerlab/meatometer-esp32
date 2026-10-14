@@ -12,10 +12,8 @@
 #include <esp_matter_console.h>
 #include <esp_matter_ota.h>
 
-#include <app/server/CommissioningWindowManager.h>
 #include <app/server/Server.h>
 #include <clusters/temperature_measurement/integration.h>
-#include <platform/ConnectivityManager.h>
 #include <platform/PlatformManager.h>
 #include <setup_payload/OnboardingCodesUtil.h>
 #include <setup_payload/QRCodeSetupPayloadGenerator.h>
@@ -39,9 +37,6 @@ using namespace esp_matter;
 using namespace esp_matter::endpoint;
 
 static const char *TAG = "matter";
-
-/** Commissioning window opened from the Pair button (UI-6). */
-static constexpr auto k_timeout_seconds = 300;
 
 /** CN-9: the cluster cannot represent more than 327.67 C. */
 static constexpr std::int16_t kMeasuredValueMax = 32767;
@@ -99,7 +94,7 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
             s_instance->refresh_commissioned();
         }
         // With no fabric left, that complete is the removal finishing, not a
-        // successful join. Pair opens the next window (UI-6).
+        // successful join. The app does not open a commissioning window.
         if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
             set_state(ConnectivityState::Disconnected);
         } else {
@@ -110,10 +105,6 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 
     case chip::DeviceLayer::DeviceEventType::kFailSafeTimerExpired:
         ESP_LOGI(TAG, "Commissioning failed, fail safe timer expired");
-        // A failed commission does not reopen the window. Pair does that (UI-6).
-        if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
-            set_state(ConnectivityState::Disconnected);
-        }
         break;
 
     case chip::DeviceLayer::DeviceEventType::kCommissioningSessionStarted:
@@ -126,17 +117,9 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 
     case chip::DeviceLayer::DeviceEventType::kCommissioningWindowOpened:
         ESP_LOGI(TAG, "Commissioning window opened");
-        if (s_instance == nullptr || !s_instance->pairing_active()) {
-            // Boot, and removing the last fabric, open a window on their own.
-            // Close it on the next CHIP turn so this callback can finish.
-            chip::DeviceLayer::SystemLayer().ScheduleLambda([]() {
-                if (s_instance != nullptr) {
-                    s_instance->close_unsolicited_window();
-                }
-            });
-            break;
+        if (s_instance != nullptr) {
+            s_instance->note_window_opened();
         }
-        s_instance->note_window_opened();
         set_state(ConnectivityState::Commissioning);
         MEMORY_PROFILER_DUMP_HEAP_STAT("commissioning window opened");
         break;
@@ -154,8 +137,6 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
         if (s_instance != nullptr) {
             s_instance->refresh_commissioned();
         }
-        // Wi-Fi credentials may still be present. Pair opens the matching
-        // window later; this event does not (UI-6).
         set_state(ConnectivityState::Disconnected);
         break;
     }
@@ -349,82 +330,8 @@ void MatterConnectivity::note_window_opened()
     retained_fabric_.store(commissioned_.load());
 }
 
-void MatterConnectivity::request_pairing()
-{
-    pairing_generation_.fetch_add(1);
-    pairing_requested_.store(true);
-    chip::DeviceLayer::SystemLayer().ScheduleLambda([]() {
-        if (s_instance != nullptr) {
-            s_instance->open_pairing_window();
-        }
-    });
-}
-
-void MatterConnectivity::cancel_pairing()
-{
-    pairing_requested_.store(false);
-    chip::DeviceLayer::SystemLayer().ScheduleLambda([]() {
-        if (s_instance != nullptr) {
-            s_instance->close_unsolicited_window();
-        }
-    });
-}
-
-void MatterConnectivity::close_unsolicited_window()
-{
-    if (pairing_requested_.load()) {
-        return;
-    }
-    chip::CommissioningWindowManager &commissionMgr = chip::Server::GetInstance().GetCommissioningWindowManager();
-    if (!commissionMgr.IsCommissioningWindowOpen()) {
-        return;
-    }
-    close_epoch_.store(pairing_generation_.load());
-    close_pending_.store(true);
-    commissionMgr.CloseCommissioningWindow();
-}
-
-void MatterConnectivity::open_pairing_window()
-{
-    if (!pairing_requested_.load()) {
-        return;
-    }
-    if (chip::Server::GetInstance().GetFabricTable().FabricCount() != 0) {
-        pairing_requested_.store(false);
-        return;
-    }
-
-    const bool on_network = chip::DeviceLayer::ConnectivityMgr().IsWiFiStationProvisioned();
-    load_onboarding(on_network);
-
-    chip::CommissioningWindowManager &commissionMgr = chip::Server::GetInstance().GetCommissioningWindowManager();
-    if (commissionMgr.IsCommissioningWindowOpen()) {
-        set_state(ConnectivityState::Commissioning);
-        return;
-    }
-
-    constexpr auto kTimeoutSeconds = chip::System::Clock::Seconds32(k_timeout_seconds);
-    const auto advertisement = on_network ? chip::CommissioningWindowAdvertisement::kDnssdOnly
-                                          : chip::CommissioningWindowAdvertisement::kAllSupported;
-    CHIP_ERROR err = commissionMgr.OpenBasicCommissioningWindow(kTimeoutSeconds, advertisement);
-    if (err != CHIP_NO_ERROR) {
-        ESP_LOGE(TAG, "Failed to open commissioning window, err:%" CHIP_ERROR_FORMAT, err.Format());
-        pairing_requested_.store(false);
-        return;
-    }
-    set_state(ConnectivityState::Commissioning);
-}
-
 void MatterConnectivity::on_window_closed()
 {
-    if (close_pending_.exchange(false)) {
-        // A close this object started. Ignore it when Pair was pressed again
-        // after that close was issued, so the new request is not dropped.
-        if (pairing_generation_.load() != close_epoch_.load()) {
-            return;
-        }
-    }
-    pairing_requested_.store(false);
     // Do not require Commissioning here. Wi-Fi stores Connected as soon as it
     // has an address, which is the usual path through pairing, so the window
     // often closes from Connected. A fail-safe or timeout with no fabric must
@@ -436,11 +343,6 @@ void MatterConnectivity::on_window_closed()
     } else {
         set_state(ConnectivityState::Disconnected);
     }
-}
-
-bool MatterConnectivity::load_on_network_onboarding()
-{
-    return load_onboarding(true);
 }
 
 bool MatterConnectivity::load_onboarding(bool on_network)
