@@ -7,20 +7,23 @@
 /** Characters per rendered line, including the terminator. */
 inline constexpr std::size_t kScreenLineSize = 48;
 
-/** Lines the main screen can show: one per probe plus a battery line. */
+/**
+ * Lines the main screen compares to skip unchanged redraws:
+ * one status line plus one line per probe (UI-2).
+ */
 inline constexpr std::size_t kScreenLineCount = kMaxProbes + 1;
 
 using ScreenLine = char[kScreenLineSize];
 
 /**
- * Main screen content (UI-2): name and temperature of every connected probe.
- * Disconnected probes are not listed.
+ * Home-screen content (UI-2): status bar, then every configured probe.
+ * A probe with no valid reading is still listed.
  *
- * Pure formatting, no hardware. The LVGL circles use the readings directly;
- * this text is the empty-state line and the redraw check.
+ * Pure formatting, no hardware. The LVGL widgets read the snapshot; this
+ * text is only the redraw check.
  */
 class MainScreen {
 public:
-    /** Fills `lines` and returns how many were written. */
+    /** Fills `lines` and returns how many were written. Line 0 is the status bar. */
     static std::size_t format(const DeviceSnapshot &snapshot, ScreenLine *lines, std::size_t max_lines);
 };

@@ -12,7 +12,6 @@
 #include <esp_matter_console.h>
 #include <esp_matter_ota.h>
 
-#include <app/server/CommissioningWindowManager.h>
 #include <app/server/Server.h>
 #include <clusters/temperature_measurement/integration.h>
 #include <platform/PlatformManager.h>
@@ -39,9 +38,6 @@ using namespace esp_matter::endpoint;
 
 static const char *TAG = "matter";
 
-/** Commissioning window kept open for this long after the last fabric leaves. */
-static constexpr auto k_timeout_seconds = 300;
-
 /** CN-9: the cluster cannot represent more than 327.67 C. */
 static constexpr std::int16_t kMeasuredValueMax = 32767;
 static constexpr std::int16_t kMeasuredValueMin = -27315;
@@ -53,37 +49,6 @@ static_assert(kManualPairingCodeSize >= static_cast<std::size_t>(chip::kManualSe
 static MatterConnectivity *s_instance = nullptr;
 
 static void set_state(ConnectivityState state);
-
-/**
- * DNS-SD pairing window after the last fabric is gone.
- *
- * Returns false when a fabric is still present, or the window could not be
- * opened. Open fails with CHIP_ERROR_INCORRECT_STATE while the fail-safe that
- * removed the fabric is still armed; callers retry once that has cleared.
- */
-static bool open_dnssd_pairing_window()
-{
-    if (chip::Server::GetInstance().GetFabricTable().FabricCount() != 0) {
-        return false;
-    }
-
-    chip::CommissioningWindowManager &commissionMgr = chip::Server::GetInstance().GetCommissioningWindowManager();
-    if (!commissionMgr.IsCommissioningWindowOpen()) {
-        if (s_instance != nullptr) {
-            s_instance->load_on_network_onboarding();
-        }
-        constexpr auto kTimeoutSeconds = chip::System::Clock::Seconds16(k_timeout_seconds);
-        CHIP_ERROR err = commissionMgr.OpenBasicCommissioningWindow(kTimeoutSeconds,
-                                                                    chip::CommissioningWindowAdvertisement::kDnssdOnly);
-        if (err != CHIP_NO_ERROR) {
-            ESP_LOGE(TAG, "Failed to open commissioning window, err:%" CHIP_ERROR_FORMAT, err.Format());
-            return false;
-        }
-    }
-
-    set_state(ConnectivityState::Commissioning);
-    return true;
-}
 
 #ifdef CONFIG_ENABLE_SET_CERT_DECLARATION_API
 extern const uint8_t cd_start[] asm("_binary_certification_declaration_der_start");
@@ -128,14 +93,10 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
             s_instance->note_commissioning_completed();
             s_instance->refresh_commissioned();
         }
-        // RemoveFabric leaves the fail-safe armed, so the window open in
-        // kFabricRemoved usually fails. CommissioningComplete disarms it.
         // With no fabric left, that complete is the removal finishing, not a
-        // successful join.
+        // successful join. The app does not open a commissioning window.
         if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
-            if (!open_dnssd_pairing_window()) {
-                set_state(ConnectivityState::Disconnected);
-            }
+            set_state(ConnectivityState::Disconnected);
         } else {
             set_state(ConnectivityState::Connected);
         }
@@ -144,9 +105,6 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 
     case chip::DeviceLayer::DeviceEventType::kFailSafeTimerExpired:
         ESP_LOGI(TAG, "Commissioning failed, fail safe timer expired");
-        // The expiry handler is still marked busy until its disarm work runs.
-        // Opening here fails; do it on the next turn of the CHIP loop.
-        chip::DeviceLayer::SystemLayer().ScheduleLambda([]() { open_dnssd_pairing_window(); });
         break;
 
     case chip::DeviceLayer::DeviceEventType::kCommissioningSessionStarted:
@@ -179,15 +137,7 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
         if (s_instance != nullptr) {
             s_instance->refresh_commissioned();
         }
-        if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
-            // Wi-Fi credentials are kept, so the new window advertises on
-            // DNS-SD only. The QR has to match that rendezvous.
-            if (!open_dnssd_pairing_window()) {
-                set_state(ConnectivityState::Disconnected);
-            }
-        } else {
-            set_state(ConnectivityState::Disconnected);
-        }
+        set_state(ConnectivityState::Disconnected);
         break;
     }
 
@@ -393,11 +343,6 @@ void MatterConnectivity::on_window_closed()
     } else {
         set_state(ConnectivityState::Disconnected);
     }
-}
-
-bool MatterConnectivity::load_on_network_onboarding()
-{
-    return load_onboarding(true);
 }
 
 bool MatterConnectivity::load_onboarding(bool on_network)

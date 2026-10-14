@@ -32,6 +32,8 @@ enum class LedColor {
 enum class ProbeKind {
     Chamber,
     Food,
+    /** Stand-in probe with no grill hardware behind it. */
+    Simulated,
 };
 
 using ProbeId = std::uint8_t;

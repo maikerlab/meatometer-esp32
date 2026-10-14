@@ -26,8 +26,11 @@ public:
     Result set_display_power(bool on);
     bool display_on() const { return display_on_; }
 
-    /** Draws the main screen; a no-op while the display is off. */
-    void render(const DeviceSnapshot &snapshot);
+    /**
+     * Draws the sensor table, or the pairing QR when `show_pairing` is set.
+     * A no-op while the display is off.
+     */
+    void render(const DeviceSnapshot &snapshot, bool show_pairing);
 
     /** BLE onboarding QR payload and the manual pairing code shown beneath it. */
     void set_onboarding(const char *qr_payload, const char *pairing_code);
@@ -45,8 +48,8 @@ private:
     static void button_short_press_cb(void *button_handle, void *usr_data);
     static void button_long_press_cb(void *button_handle, void *usr_data);
     void post(AppEventType type);
-    /** Pushes the snapshot onto the circle widgets. False if the panel lock was busy. */
-    bool draw_probes(const DeviceSnapshot &snapshot, const ScreenLine *lines, std::size_t count);
+    /** Pushes the snapshot onto the table. False if the panel lock was busy. */
+    bool draw_probes(const DeviceSnapshot &snapshot);
     /** QR plus pairing code. False if the panel lock was busy. */
     bool draw_pairing();
     /** Writes the stored onboarding payload into the widgets. Caller holds the display lock. */
@@ -58,21 +61,22 @@ private:
     void *button_handle_{nullptr};
     bool display_on_{true};
 
-    /** One circle on the main screen: name and temperature of a connected probe. */
-    struct ProbeCircle {
+    /** One table row: name and temperature of a configured probe. */
+    struct ProbeRow {
         void *root;
         void *name;
         void *temperature;
     };
 
-    static constexpr std::size_t kProbeCircleCount = 3;
-
-    void *probes_row_{nullptr};
-    void *empty_label_{nullptr};
+    void *status_bar_{nullptr};
+    void *battery_label_{nullptr};
+    void *connection_label_{nullptr};
+    void *pair_button_{nullptr};
+    void *table_{nullptr};
     void *pairing_root_{nullptr};
     void *pairing_qr_{nullptr};
     void *pairing_code_{nullptr};
-    ProbeCircle circles_[kProbeCircleCount]{};
+    ProbeRow rows_[kMaxProbes]{};
     bool display_ready_{false};
 
     // Last content actually drawn, so an unchanged snapshot costs nothing.

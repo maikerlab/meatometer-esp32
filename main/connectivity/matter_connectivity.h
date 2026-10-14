@@ -29,11 +29,6 @@ public:
 
     /** Called from the CHIP event loop. */
     void set_state(ConnectivityState state) { state_.store(state); }
-    /**
-     * On-network QR for the DNS-SD-only window opened after the last fabric
-     * leaves. BLE is not advertising in that window.
-     */
-    bool load_on_network_onboarding();
     void note_commissioning_completed() { commissioning_completed_.store(true); }
     void note_window_opened();
     void refresh_commissioned();

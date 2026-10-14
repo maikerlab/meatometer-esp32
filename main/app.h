@@ -23,7 +23,7 @@
 enum class AppMode {
     Boot,
     Running,
-    DisplayOff,
+    /** QR screen. Does not open or close the Matter window (UI-6). */
     Commissioning,
     FactoryReset,
 };
